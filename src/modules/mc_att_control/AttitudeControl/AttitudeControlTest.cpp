@@ -138,3 +138,132 @@ TEST(AttitudeControlTest, YawWeightScaling)
 	// THEN: no actuation (also no NAN)
 	EXPECT_EQ(rate_setpoint, Vector3f());
 }
+
+class AttitudeControlFeedforwardTest : public ::testing::Test
+{
+public:
+	AttitudeControlFeedforwardTest()
+	{
+		_attitude_control.setProportionalGain(Vector3f(6.5f, 6.5f, 2.8f), 0.4f);
+		_attitude_control.setRateLimit(Vector3f(10.f, 10.f, 10.f));
+	}
+
+	// Push a constant-rate ramp around the given body axis until the alpha filter is settled.
+	Quatf rampSetpoint(const Vector3f &body_rate, float yawspeed_sp, int steps)
+	{
+		Quatf q_d;
+
+		for (int i = 0; i < steps; i++) {
+			q_d = q_d * Quatf(AxisAnglef(body_rate * kDt));
+			_attitude_control.setAttitudeSetpoint(q_d, yawspeed_sp, kDt);
+		}
+
+		return q_d;
+	}
+
+	AttitudeControl _attitude_control;
+
+	static constexpr float kDt = 0.004f;                                    // 250 Hz setpoint rate
+	static constexpr float kTau = AttitudeControl::kAttFFTimeConstant;      // 50 ms
+	static constexpr int kSettleSteps = 100;                                // ~ 8 * tau, well-settled
+};
+
+TEST_F(AttitudeControlFeedforwardTest, ConstantSetpointGivesNoFeedforward)
+{
+	// GIVEN: a constant tilted setpoint repeated with valid dt
+	const Quatf q_d(AxisAnglef(Vector3f(0.1f, 0.f, 0.f)));
+
+	for (int i = 0; i < kSettleSteps; i++) {
+		_attitude_control.setAttitudeSetpoint(q_d, 0.f, kDt);
+	}
+
+	// WHEN: vehicle is at the setpoint (no error)
+	const Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	// THEN: rate setpoint is zero — no spurious FF on a non-moving SP
+	EXPECT_NEAR(rate_setpoint.norm(), 0.f, 1e-3f);
+}
+
+TEST_F(AttitudeControlFeedforwardTest, RollRampProducesRollFeedforward)
+{
+	// GIVEN: a steady roll ramp, vehicle perfectly tracking
+	const float omega = 0.5f;
+	const Quatf q_d = rampSetpoint(Vector3f(omega, 0.f, 0.f), 0.f, kSettleSteps);
+
+	// WHEN: vehicle is at the setpoint (no error → P term = 0)
+	const Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	// THEN: the entire rate setpoint comes from the FF and lies on the roll axis
+	EXPECT_NEAR(rate_setpoint(0), omega, 0.05f * omega);
+	EXPECT_NEAR(rate_setpoint(1), 0.f, 1e-3f);
+	EXPECT_NEAR(rate_setpoint(2), 0.f, 1e-3f);
+}
+
+TEST_F(AttitudeControlFeedforwardTest, PitchRampProducesPitchFeedforward)
+{
+	// GIVEN: a steady pitch ramp, vehicle perfectly tracking
+	const float omega = 0.5f;
+	const Quatf q_d = rampSetpoint(Vector3f(0.f, omega, 0.f), 0.f, kSettleSteps);
+
+	const Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	EXPECT_NEAR(rate_setpoint(0), 0.f, 1e-3f);
+	EXPECT_NEAR(rate_setpoint(1), omega, 0.05f * omega);
+	EXPECT_NEAR(rate_setpoint(2), 0.f, 1e-3f);
+}
+
+TEST_F(AttitudeControlFeedforwardTest, YawRampDoesNotDoubleCountWithYawspeedFeedforward)
+{
+	// GIVEN: a yaw ramp with the analytical yawspeed FF set to the same rate.
+	// The numerical FF would also see the SP rotating in yaw; we expect the world-z
+	// projection in update() to remove that component so the existing yaw FF is the
+	// sole contributor.
+	const float omega = 0.5f;
+	const Quatf q_d = rampSetpoint(Vector3f(0.f, 0.f, omega), omega, kSettleSteps);
+
+	const Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	// THEN: total yaw rate is exactly omega, not 2 * omega
+	EXPECT_NEAR(rate_setpoint(0), 0.f, 1e-3f);
+	EXPECT_NEAR(rate_setpoint(1), 0.f, 1e-3f);
+	EXPECT_NEAR(rate_setpoint(2), omega, 0.05f * omega);
+}
+
+TEST_F(AttitudeControlFeedforwardTest, SetpointDiscontinuityResetsFilter)
+{
+	// GIVEN: a settled roll-ramp FF, then a sudden large jump in q_d
+	const float omega = 0.5f;
+	Quatf q_d = rampSetpoint(Vector3f(omega, 0.f, 0.f), 0.f, kSettleSteps);
+
+	// 0.5 rad jump in one sample → implied rate 125 rad/s, far above the 10 rad/s rate limit
+	q_d = q_d * Quatf(AxisAnglef(Vector3f(0.f, 0.5f, 0.f)));
+	_attitude_control.setAttitudeSetpoint(q_d, 0.f, kDt);
+
+	// WHEN: vehicle is at the new (post-step) setpoint (no error)
+	const Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	// THEN: filter was reset by the discontinuity guard, no spurious FF
+	EXPECT_NEAR(rate_setpoint.norm(), 0.f, 1e-3f);
+}
+
+TEST_F(AttitudeControlFeedforwardTest, FeedForwardDisabledSuppressesContribution)
+{
+	// GIVEN: a settled roll-ramp FF
+	const float omega = 0.5f;
+	const Quatf q_d = rampSetpoint(Vector3f(omega, 0.f, 0.f), 0.f, kSettleSteps);
+
+	// WHEN: FF is disabled (e.g. autotune active)
+	_attitude_control.setFeedForwardEnabled(false);
+	Vector3f rate_setpoint = _attitude_control.update(q_d);
+
+	// THEN: no FF applied even though the filter still holds the ramp rate
+	EXPECT_NEAR(rate_setpoint.norm(), 0.f, 1e-3f);
+
+	// AND WHEN: re-enabled, the FF returns immediately (filter state preserved)
+	_attitude_control.setFeedForwardEnabled(true);
+	rate_setpoint = _attitude_control.update(q_d);
+
+	EXPECT_NEAR(rate_setpoint(0), omega, 0.05f * omega);
+	EXPECT_NEAR(rate_setpoint(1), 0.f, 1e-3f);
+	EXPECT_NEAR(rate_setpoint(2), 0.f, 1e-3f);
+}

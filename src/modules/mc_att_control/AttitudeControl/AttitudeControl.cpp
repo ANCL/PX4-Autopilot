@@ -52,6 +52,47 @@ void AttitudeControl::setProportionalGain(const matrix::Vector3f &proportional_g
 	}
 }
 
+void AttitudeControl::setAttitudeSetpoint(const Quatf &qd, const float yawspeed_setpoint, const float dt)
+{
+	Quatf qd_normalized = qd;
+	qd_normalized.normalize();
+
+	if (dt > 0.f && _has_prev_setpoint) {
+		// Numerical derivative of q_d as a body-frame angular velocity. delta_q is
+		// the rotation between consecutive setpoints; 2*imag(delta_q) is its small-
+		// angle axis-angle vector, and dividing by dt gives the corresponding rate.
+		const Quatf delta_q = (_attitude_setpoint_q.inversed() * qd_normalized).canonical();
+		const Vector3f omega_raw = (2.f / dt) * delta_q.imag();
+
+		// Implied rate above the per-axis controller rate limit means the delta is
+		// a SP discontinuity (mode change, heading flip), not a real motion.
+		const bool is_discontinuity = (fabsf(omega_raw(0)) > _rate_limit(0))
+					      || (fabsf(omega_raw(1)) > _rate_limit(1))
+					      || (fabsf(omega_raw(2)) > _rate_limit(2));
+
+		if (is_discontinuity) {
+			_ff_filter.reset(Vector3f{});
+
+		} else {
+			_ff_filter.update(omega_raw, dt);
+		}
+
+	} else if (dt > 0.f) {
+		_ff_filter.reset(Vector3f{});
+	}
+
+	_attitude_setpoint_q = qd_normalized;
+	_has_prev_setpoint = true;
+	_yawspeed_setpoint = yawspeed_setpoint;
+}
+
+void AttitudeControl::adaptAttitudeSetpoint(const Quatf &q_delta)
+{
+	_attitude_setpoint_q = q_delta * _attitude_setpoint_q;
+	_attitude_setpoint_q.normalize();
+	_ff_filter.reset(Vector3f{});
+}
+
 matrix::Vector3f AttitudeControl::update(const Quatf &q) const
 {
 	Quatf qd = _attitude_setpoint_q;
@@ -93,6 +134,15 @@ matrix::Vector3f AttitudeControl::update(const Quatf &q) const
 
 	// calculate angular rates setpoint
 	Vector3f rate_setpoint = eq.emult(_proportional_gain);
+
+	// Filtered q_d derivative as feedforward. World-z is subtracted to avoid
+	// double-counting with the analytical yaw FF below.
+	if (_ff_enabled) {
+		Vector3f ff = _ff_filter.getState();
+		const Vector3f z_w_in_b = q.inversed().dcm_z();
+		ff -= ff.dot(z_w_in_b) * z_w_in_b;
+		rate_setpoint += ff;
+	}
 
 	// Feed forward the yaw setpoint rate.
 	// yawspeed_setpoint is the feed forward commanded rotation around the world z-axis,
