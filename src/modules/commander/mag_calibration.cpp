@@ -166,29 +166,6 @@ static unsigned progress_percentage(mag_worker_data_t *worker_data)
 	return 100 * ((float)worker_data->done_count) / worker_data->calibration_sides;
 }
 
-static bool cal_values_finite(const Vector3f &sphere, float radius, const Vector3f &diag, const Vector3f &offdiag)
-{
-	return sphere.isAllFinite() && PX4_ISFINITE(radius) && diag.isAllFinite() && offdiag.isAllFinite();
-}
-
-static bool cal_radius_valid(float radius)
-{
-	return radius >= 0.2f && radius < 0.7f;
-}
-
-static bool cal_scale_positive(const Vector3f &diag)
-{
-	return diag(0) > 0.f && diag(1) > 0.f && diag(2) > 0.f;
-}
-
-static bool cal_large_offsets(const Vector3f &sphere)
-{
-	// maximum measurement range is ~1.9 Ga, the earth field is ~0.6 Ga,
-	//  so an offset larger than ~1.3 Ga means the mag will saturate in some directions.
-	static constexpr float MAG_MAX_OFFSET_LEN = 1.3f;
-	return sphere.longerThan(MAG_MAX_OFFSET_LEN);
-}
-
 static float get_sphere_radius()
 {
 	// if GPS is available use real field intensity from world magnetic model
@@ -660,28 +637,32 @@ calibrate_return mag_calibrate_all(orb_advert_t *mavlink_log_pub, int32_t cal_ma
 					offdiag[cur_mag](i) = sphere_data.offdiag(i);
 				}
 
-				const bool enabled = worker_data.calibration[cur_mag].enabled();
 				const char *fail_reason = nullptr;
 
-				if (!cal_values_finite(sphere[cur_mag], sphere_radius[cur_mag], diag[cur_mag], offdiag[cur_mag])) {
+				if (!sphere[cur_mag].isAllFinite() || !PX4_ISFINITE(sphere_radius[cur_mag])
+				    || !diag[cur_mag].isAllFinite() || !offdiag[cur_mag].isAllFinite()) {
 					fail_reason = "NaN";
 					result = calibrate_return_error;
 
-				} else if (!cal_radius_valid(sphere_radius[cur_mag])) {
+				} else if (!math::isInRange(sphere_radius[cur_mag], .2f, .7f)) {
 					fail_reason = "invalid radius";
 					result = calibrate_return_error;
 
-				} else if (!cal_scale_positive(diag[cur_mag])) {
+				} else if (diag[cur_mag].min() <= 0.f) {
 					fail_reason = "negative scale";
 					result = calibrate_return_error;
 
-				} else if (cal_large_offsets(sphere[cur_mag])) {
+				} else if (sphere[cur_mag].longerThan(1.3f)) {
+					// maximum measurement range is ~1.9 Ga, the earth field is ~0.6 Ga,
+					// so an offset larger than ~1.3 Ga means the mag will saturate in some directions.
 					fail_reason = "large offsets";
-					result = calibrate_return_ok;
+					result = calibrate_return_error;
 				}
 
-				if (fail_reason) {
-					if (enabled && (result == calibrate_return_error)) {
+				const bool enabled = worker_data.calibration[cur_mag].enabled();
+
+				if ((result == calibrate_return_error) && fail_reason) {
+					if (enabled) {
 						calibration_log_emergency(mavlink_log_pub, "Retry cal mag %" PRIu8 ": %s", cur_mag, fail_reason);
 
 					} else {
