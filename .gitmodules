@@ -75,7 +75,7 @@
 [submodule "Tools/simulation/gz"]
 	path = Tools/simulation/gz
 	url = https://github.com/ANCL/PX4-gazebo-models.git
-	branch = main
+	branch = lab/v1.16-gz-baseline
 [submodule "boards/modalai/voxl2/libfc-sensor-api"]
 	path = boards/modalai/voxl2/libfc-sensor-api
 	url = https://gitlab.com/voxl-public/voxl-sdk/core-libs/libfc-sensor-api.git
@@ -89,3 +89,5 @@
 [submodule "src/drivers/uavcan/libdronecan/libuavcan/dsdl_compiler/pydronecan"]
 	path = src/drivers/uavcan/libdronecan/libuavcan/dsdl_compiler/pydronecan
 	url = https://github.com/dronecan/pydronecan
+[submodule "px4/PX4-Autopilot"]
+	branch = lab/v1.16-gz-baseline
