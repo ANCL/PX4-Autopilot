@@ -42,6 +42,7 @@ list(APPEND flight_tasks_all
 	Auto
 	Descend
 	Failsafe
+	FAPosition # custom
 	ManualAcceleration
 	ManualAccelerationSlow
 	ManualAltitude

@@ -41,12 +41,14 @@
  *   Useful for velocity control tuning.
  * Acceleration based:
  *   Sticks map to acceleration and there's a virtual brake drag
- *
+ * Fully-actuated position control (CUSTOM)
+ *   Position control for a custom FA hexarotor
  * @value 0 Direct velocity
  * @value 4 Acceleration based
+ * @value 5 Fully-actuated position control
  * @group Multicopter Position Control
  */
-PARAM_DEFINE_INT32(MPC_POS_MODE, 4);
+PARAM_DEFINE_INT32(MPC_POS_MODE, 5);
 
 /**
  * Maximum horizontal velocity setpoint in Position mode
