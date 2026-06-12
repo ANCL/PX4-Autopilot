@@ -65,6 +65,7 @@ uint8 NAVIGATION_STATE_EXTERNAL6 = 28
 uint8 NAVIGATION_STATE_EXTERNAL7 = 29
 uint8 NAVIGATION_STATE_EXTERNAL8 = 30
 uint8 NAVIGATION_STATE_MAX = 31
+uint8 NAVIGATIOJN_STATE_FA_POSITION = 32	# Fully actuated position control mode (Custom)
 
 uint8 executor_in_charge                        # Current mode executor in charge (0=Autopilot)
 
