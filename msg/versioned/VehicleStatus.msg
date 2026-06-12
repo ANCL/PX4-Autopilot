@@ -49,7 +49,7 @@ uint8 NAVIGATION_STATE_DESCEND = 12             # Descend mode (no position cont
 uint8 NAVIGATION_STATE_TERMINATION = 13         # Termination mode
 uint8 NAVIGATION_STATE_OFFBOARD = 14
 uint8 NAVIGATION_STATE_STAB = 15                # Stabilized mode
-uint8 NAVIGATION_STATE_FREE1 = 16
+uint8 NAVIGATION_STATE_FA_POSITION = 16		# Fully actuated position control mode (Custom)
 uint8 NAVIGATION_STATE_AUTO_TAKEOFF = 17        # Takeoff
 uint8 NAVIGATION_STATE_AUTO_LAND = 18           # Land
 uint8 NAVIGATION_STATE_AUTO_FOLLOW_TARGET = 19  # Auto Follow
@@ -65,7 +65,6 @@ uint8 NAVIGATION_STATE_EXTERNAL6 = 28
 uint8 NAVIGATION_STATE_EXTERNAL7 = 29
 uint8 NAVIGATION_STATE_EXTERNAL8 = 30
 uint8 NAVIGATION_STATE_MAX = 31
-uint8 NAVIGATIOJN_STATE_FA_POSITION = 32	# Fully actuated position control mode (Custom)
 
 uint8 executor_in_charge                        # Current mode executor in charge (0=Autopilot)
 

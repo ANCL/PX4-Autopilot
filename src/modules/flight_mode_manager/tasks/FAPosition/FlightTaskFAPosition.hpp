@@ -10,7 +10,7 @@ public:
 
 	bool activate(const trajectory_setpoint_s &last_setpoint) override;
 	bool update() override;
-
+	
 private:
 	void applyFullyActuatedSetpointPolicy();
 };

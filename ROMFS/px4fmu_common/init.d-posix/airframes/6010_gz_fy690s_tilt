@@ -7,6 +7,7 @@ PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
 PX4_SIM_MODEL=${PX4_SIM_MODEL:=fy690s_tilt}
 
 param set-default CA_ROTOR_COUNT 6
+param set-default MAV_TYPE 13 # Hexarotor
 
 # ==========================================
 # ROTOR 0 (Base Angle: 30.0°, CCW)

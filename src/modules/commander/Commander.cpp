@@ -416,6 +416,9 @@ int Commander::custom_command(int argc, char *argv[])
 			} else if (!strcmp(argv[1], "ext1")) {
 				send_vehicle_command(vehicle_command_s::VEHICLE_CMD_DO_SET_MODE, 1, PX4_CUSTOM_MAIN_MODE_AUTO,
 						     PX4_CUSTOM_SUB_MODE_EXTERNAL1);
+				
+			} else if (!strcmp(argv[1], "fa_position")) {
+				send_vehicle_command(vehicle_command_s::VEHICLE_CMD_DO_SET_MODE, 1, PX4_CUSTOM_MAIN_MODE_FA_POSITION);
 
 			} else {
 				PX4_ERR("argument %s unsupported.", argv[1]);
@@ -888,6 +891,21 @@ Commander::handle_command(const vehicle_command_s &cmd)
 					} else {
 						desired_nav_state = vehicle_status_s::NAVIGATION_STATE_MANUAL;
 					}
+				}
+			}
+
+			if (desired_nav_state == vehicle_status_s::NAVIGATION_STATE_FA_POSITION) {
+				// check if the estimators are healthy enough for FA_POSITION
+				bool is_estimator_valid = _vehicle_status.can_set_nav_states_mask & (1UL << vehicle_status_s::NAVIGATION_STATE_FA_POSITION);
+				
+				// check airframe configuration
+				bool is_correct_airframe = (_vehicle_status.system_type == 13 /* MAV_TYPE_HEXAROTOR = 13 */);
+				
+				if (!is_estimator_valid || !is_correct_airframe) {
+					// reject transition
+					main_ret = TRANSITION_DENIED;
+					desired_nav_state = vehicle_status_s::NAVIGATION_STATE_MAX; // 'failure' mode
+					mavlink_log_critical(&_mavlink_log_pub, "FA_POSITION denied: Check estimators & airframe\t");
 				}
 			}
 

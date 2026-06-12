@@ -14,7 +14,7 @@ bool FlightTaskFAPosition::activate(const trajectory_setpoint_s &last_setpoint)
 	// removed so that the SITL screen isn't flooded with prints
 	// invalid ekf2 data is inherent to the SITL startup, so it will 
 	// activate() over & over unless throttled.
-	
+
 	// PX4_INFO("FlightTaskFAPosition activated");
     
 	return true;

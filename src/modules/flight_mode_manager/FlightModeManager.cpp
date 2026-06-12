@@ -251,6 +251,17 @@ void FlightModeManager::start_flight_task()
 		matching_task_running = matching_task_running && !task_failure;
 	}
 
+	// Fully actuated position control
+	if ((_vehicle_status_sub.get().nav_state == vehicle_status_s::NAVIGATION_STATE_FA_POSITION) || task_failure) {
+		found_some_task = true;
+		FlightTaskError error = FlightTaskError::NoError;
+
+		error = switchTask(FlightTaskIndex::FAPosition);
+
+		task_failure = (error != FlightTaskError::NoError);
+		matching_task_running = matching_task_running && !task_failure;
+	}
+
 	// Emergency descend
 	if (nav_state_descend || task_failure) {
 		found_some_task = true;
