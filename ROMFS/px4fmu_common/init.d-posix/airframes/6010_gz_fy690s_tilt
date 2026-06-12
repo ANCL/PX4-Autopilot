@@ -4,7 +4,7 @@
 
 PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
 PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
-PX4_SIM_MODEL=${PX4_SIM_MODEL:=fa_hex_tilt}
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=fy690s_tilt}
 
 param set-default CA_ROTOR_COUNT 6
 
