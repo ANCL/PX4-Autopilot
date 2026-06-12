@@ -34,7 +34,7 @@
 # add the core Flight tasks that the additional flight tasks depend on
 add_subdirectory(FlightTask)
 add_subdirectory(Utility)
-add_subdirectory(FAPosition)
+#add_subdirectory(FAPosition)
 
 # add all additional flight tasks
 foreach(task ${flight_tasks_all})
