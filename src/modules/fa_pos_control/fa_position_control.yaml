@@ -1,0 +1,99 @@
+module_name: fa_position
+parameters:
+  - group: Fully Actuated Control
+    definitions:
+      FA_MASS:
+        description: Vehicle mass
+        type: float
+        default: 2.84
+        unit: kg
+      FA_P_X:
+        description: Position P gain X
+        type: float
+        default: 16.0
+      FA_P_Y:
+        description: Position P gain Y
+        type: float
+        default: 16.0
+      FA_P_Z:
+        description: Position P gain Z
+        type: float
+        default: 8.0
+      FA_V_X:
+        description: Velocity P gain X
+        type: float
+        default: 8.0
+      FA_V_Y:
+        description: Velocity P gain Y
+        type: float
+        default: 8.0
+      FA_V_Z:
+        description: Velocity P gain Z
+        type: float
+        default: 4.0
+      FA_R_R:
+        description: Attitude P gain Roll
+        type: float
+        default: 6.0
+      FA_R_P:
+        description: Attitude P gain Pitch
+        type: float
+        default: 6.0
+      FA_R_Y:
+        description: Attitude P gain Yaw
+        type: float
+        default: 12.0
+      FA_W_R:
+        description: Angular Rate P gain Roll
+        type: float
+        default: 1.0
+      FA_W_P:
+        description: Angular Rate P gain Pitch
+        type: float
+        default: 1.0
+      FA_W_Y:
+        description: Angular Rate P gain Yaw
+        type: float
+        default: 1.0
+      FA_THR_MAX_X:
+        description: Maximum Thrust X
+        type: float
+        default: 5.5
+        unit: N
+      FA_THR_MAX_Y:
+        description: Maximum Thrust Y
+        type: float
+        default: 4.8
+        unit: N
+      FA_THR_MAX_Z:
+        description: Maximum Thrust Z
+        type: float
+        default: 35.3
+        unit: N
+      FA_TRQ_MAX_R:
+        description: Maximum Torque Roll
+        type: float
+        default: 1.0
+        unit: Nm
+      FA_TRQ_MAX_P:
+        description: Maximum Torque Pitch
+        type: float
+        default: 1.0
+        unit: Nm
+      FA_TRQ_MAX_Y:
+        description: Maximum Torque Yaw
+        type: float
+        default: 1.0
+        unit: Nm
+      FA_HOVER_MIN:
+        description: Minimum Hover Thrust
+        type: float
+        default: 0.1
+      FA_HOVER_MAX:
+        description: Maximum Hover Thrust
+        type: float
+        default: 0.9
+      FA_HOVER_THR_ON:
+        description: Use Hover Thrust Estimate
+        type: boolean
+        default: 0

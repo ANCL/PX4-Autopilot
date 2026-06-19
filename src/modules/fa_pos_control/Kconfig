@@ -1,0 +1,19 @@
+menuconfig MODULES_FA_POS_CONTROL
+        bool "fa_pos_control"
+        default n
+        ---help---
+                Enable support for fa_pos_control
+
+menuconfig USER_FA_POS_CONTROL
+        bool "fa_pos_control running as userspace module"
+        default y
+        depends on BOARD_PROTECTED && MODULES_MC_POS_CONTROL
+        ---help---
+                Put fa_pos_control in userspace memory
+
+
+
+
+
+
+
