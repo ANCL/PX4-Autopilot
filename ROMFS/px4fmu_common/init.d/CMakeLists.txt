@@ -45,6 +45,8 @@ px4_add_romfs_files(
 	rc.balloon_apps
 	rc.balloon_defaults
 	rc.sysinit
+
+	rc.fa_defaults
 )
 
 if(CONFIG_MODULES_AIRSHIP_ATT_CONTROL)
@@ -131,4 +133,8 @@ if(CONFIG_MODULES_TEMPERATURE_COMPENSATION)
 	px4_add_romfs_files(
 		rc.thermal_cal
 	)
+endif()
+
+if(CONFIG_MODULES_FA_POS_CONTROL)
+
 endif()

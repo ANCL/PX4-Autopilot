@@ -11,28 +11,41 @@
 control_allocator start
 
 #
-# Start Multicopter Rate Controller.
-#
-mc_rate_control start
-
-#
-# Start Multicopter Attitude Controller.
-#
-mc_att_control start
-
-if param greater -s MC_AT_EN 0
-then
-	mc_autotune_attitude_control start
-fi
-
-#
-# Start Multicopter Position Controller.
+# Used in mc_pos_control
 #
 mc_hover_thrust_estimator start
 flight_mode_manager start
-mc_pos_control start
 
 #
 # Start Multicopter Land Detector.
 #
 land_detector start multicopter
+
+if param compare SYS_AUTOSTART 6010
+then
+    #
+    # Start Fully-Actuated Position Controller
+    #
+    fa_pos_control start
+else
+    #
+    # Start Multicopter Rate Controller.
+    #
+    mc_rate_control start
+
+    #
+    # Start Multicopter Attitude Controller.
+    #
+    mc_att_control start
+    
+    #
+    # Start Multicopter Position Controller.
+    #
+    mc_pos_control start
+
+    if param greater -s MC_AT_EN 0
+    then
+        mc_autotune_attitude_control start
+    fi 
+fi
+
