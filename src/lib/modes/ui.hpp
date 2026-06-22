@@ -84,7 +84,7 @@ const char *const nav_state_names[vehicle_status_s::NAVIGATION_STATE_MAX] = {
 	"Termination",
 	"Offboard",
 	"Stabilized",
-	"16: Fully Actuated Position",
+	"Fully Actuated Position",
 	"Takeoff",
 	"Land",
 	"Follow Target",

@@ -895,13 +895,10 @@ Commander::handle_command(const vehicle_command_s &cmd)
 			}
 
 			if (desired_nav_state == vehicle_status_s::NAVIGATION_STATE_FA_POSITION) {
-				// check if the estimators are healthy enough for FA_POSITION
-				bool is_estimator_valid = _vehicle_status.can_set_nav_states_mask & (1UL << vehicle_status_s::NAVIGATION_STATE_FA_POSITION);
-				
 				// check airframe configuration
 				bool is_correct_airframe = (_vehicle_status.system_type == 13 /* MAV_TYPE_HEXAROTOR = 13 */);
 				
-				if (!is_estimator_valid || !is_correct_airframe) {
+				if (!is_correct_airframe) {
 					// reject transition
 					main_ret = TRANSITION_DENIED;
 					desired_nav_state = vehicle_status_s::NAVIGATION_STATE_MAX; // 'failure' mode

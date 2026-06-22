@@ -212,9 +212,6 @@ void FlightModeManager::start_flight_task()
 		case 0:
 			error = switchTask(FlightTaskIndex::ManualPosition);
 			break;
-		case 5:
-			error = switchTask(FlightTaskIndex::FAPosition);
-			break;
 		case 4:
 		default:
 			if (_param_mpc_pos_mode.get() != 4) {
@@ -252,14 +249,14 @@ void FlightModeManager::start_flight_task()
 	}
 
 	// Fully actuated position control
-	if ((_vehicle_status_sub.get().nav_state == vehicle_status_s::NAVIGATION_STATE_FA_POSITION) || task_failure) {
+	if (_vehicle_status_sub.get().nav_state == vehicle_status_s::NAVIGATION_STATE_FA_POSITION) {      
 		found_some_task = true;
-		FlightTaskError error = FlightTaskError::NoError;
-
-		error = switchTask(FlightTaskIndex::FAPosition);
-
-		task_failure = (error != FlightTaskError::NoError);
-		matching_task_running = matching_task_running && !task_failure;
+		FlightTaskError error = switchTask(FlightTaskIndex::FAPosition);
+		
+		if (error != FlightTaskError::NoError) {
+			matching_task_running = false;
+			task_failure = true;
+		}
 	}
 
 	// Emergency descend
