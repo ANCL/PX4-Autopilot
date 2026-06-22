@@ -40,7 +40,7 @@ void FAPositionControl::parameters_update(bool force)
         _k_p = Vector3f(_param_fa_p_x.get(), _param_fa_p_y.get(), _param_fa_p_z.get());
         _k_v = Vector3f(_param_fa_v_x.get(), _param_fa_v_y.get(), _param_fa_v_z.get());
         _k_r = Vector3f(_param_fa_r_r.get(), _param_fa_r_p.get(), _param_fa_r_y.get());
-        _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_y.get(), _param_fa_w_y.get()); 
+        _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_p.get(), _param_fa_w_y.get()); 
 
         _thrust_maximums = Vector3f(_param_fa_thr_max_x.get(), _param_fa_thr_max_y.get(), _param_fa_thr_max_z.get());
         _torque_maximums = Vector3f(_param_fa_trq_max_r.get(), _param_fa_trq_max_p.get(), _param_fa_trq_max_y.get());
@@ -118,12 +118,12 @@ bool FAPositionControl::update(const float dt)
     Vector3f pos_sp(trajectory_sp.position);
     Vector3f vel_sp(trajectory_sp.velocity);
     Vector3f acc_sp(trajectory_sp.acceleration);
-    
+
     float current_yaw = Eulerf(q).psi(); 
 
-    // use the trajectory setpoint if it's valid, otherwise hold current yaw
     float desired_yaw = PX4_ISFINITE(trajectory_sp.yaw) ? trajectory_sp.yaw : current_yaw;
     Quatf q_d(Eulerf(0.0f, 0.0f, desired_yaw)); 
+    
     float desired_yawspeed = PX4_ISFINITE(trajectory_sp.yawspeed) ? trajectory_sp.yawspeed : 0.0f;
     Vector3f w_d(0.0f, 0.0f, desired_yawspeed);
 
