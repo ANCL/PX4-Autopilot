@@ -29,7 +29,7 @@ PARAM_DEFINE_FLOAT(FA_MASS, 2.84f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_X, 16.0f);
+PARAM_DEFINE_FLOAT(FA_P_X, 2.0f);
 
 /**
  * Position P Gain Y
@@ -41,7 +41,7 @@ PARAM_DEFINE_FLOAT(FA_P_X, 16.0f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_Y, 16.0f);
+PARAM_DEFINE_FLOAT(FA_P_Y, 2.0f);
 
 /**
  * Position P Gain Z
@@ -53,7 +53,7 @@ PARAM_DEFINE_FLOAT(FA_P_Y, 16.0f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_Z, 8.0f);
+PARAM_DEFINE_FLOAT(FA_P_Z, 2.0f);
 
 /**
  * Velocity P Gain X
@@ -101,7 +101,7 @@ PARAM_DEFINE_FLOAT(FA_V_Z, 4.0f);
  * @max 30.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_R_R, 6.0f);
+PARAM_DEFINE_FLOAT(FA_R_R, 2.0f);
 
 /**
  * Attitude P Gain Pitch
@@ -113,7 +113,7 @@ PARAM_DEFINE_FLOAT(FA_R_R, 6.0f);
  * @max 30.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_R_P, 6.0f);
+PARAM_DEFINE_FLOAT(FA_R_P, 2.0f);
 
 /**
  * Attitude P Gain Yaw
@@ -125,7 +125,7 @@ PARAM_DEFINE_FLOAT(FA_R_P, 6.0f);
  * @max 30.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_R_Y, 12.0f);
+PARAM_DEFINE_FLOAT(FA_R_Y, 2.0f);
 
 /**
  * Angular Rate P Gain Roll
@@ -174,7 +174,7 @@ PARAM_DEFINE_FLOAT(FA_W_Y, 1.0f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 5.5f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 63.9f);
 
 /**
  * Maximum Thrust Y
@@ -187,7 +187,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 5.5f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 4.8f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 63.9f);
 
 /**
  * Maximum Thrust Z
@@ -200,7 +200,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 4.8f);
  * @max 500.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 35.3f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 63.9f);
 
 /**
  * Maximum Torque Roll
@@ -213,7 +213,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 35.3f);
  * @max 20.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_TRQ_MAX_R, 1.0f);
+PARAM_DEFINE_FLOAT(FA_TRQ_MAX_R, 2.0f);
 
 /**
  * Maximum Torque Pitch
@@ -226,7 +226,7 @@ PARAM_DEFINE_FLOAT(FA_TRQ_MAX_R, 1.0f);
  * @max 20.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_TRQ_MAX_P, 1.0f);
+PARAM_DEFINE_FLOAT(FA_TRQ_MAX_P, 2.0f);
 
 /**
  * Maximum Torque Yaw
@@ -239,39 +239,4 @@ PARAM_DEFINE_FLOAT(FA_TRQ_MAX_P, 1.0f);
  * @max 20.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_TRQ_MAX_Y, 1.0f);
-
-/**
- * Minimum Hover Thrust
- *
- * Lower bound constraint for the adaptive hover thrust estimate.
- *
- * @group Fully Actuated Control
- * @min 0.01
- * @max 0.50
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_HOVER_MIN, 0.1f);
-
-/**
- * Maximum Hover Thrust
- *
- * Upper bound constraint for the adaptive hover thrust estimate.
- *
- * @group Fully Actuated Control
- * @min 0.50
- * @max 0.95
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_HOVER_MAX, 0.9f);
-
-/**
- * Use Hover Thrust Estimator
- *
- * If enabled, uses the system's adaptive hover thrust estimate for stabilization.
- * If disabled, relies strictly on the static FA_MASS and FA_THR_MAX_* parameters.
- *
- * @group Fully Actuated Control
- * @boolean
- */
-PARAM_DEFINE_INT32(FA_HVR_THR_ON, 0);
+PARAM_DEFINE_FLOAT(FA_TRQ_MAX_Y, 2.0f);

@@ -1,5 +1,4 @@
 #include "FAPositionControl.hpp"
-#include <lib/matrix/matrix/math.hpp>
 #include <drivers/drv_hrt.h>
 
 using namespace matrix;
@@ -19,7 +18,7 @@ FAPositionControl::~FAPositionControl()
 bool FAPositionControl::init() 
 {
     // wake up the module whenever new angular velocity data is published
-    if (!_vehicle_angular_velocity_sub.registerCallback()) {
+    if (!_vehicle_local_position_sub.registerCallback()) {
     PX4_ERR("Callback registration failed");
     return false;
 }
@@ -44,18 +43,13 @@ void FAPositionControl::parameters_update(bool force)
 
         _thrust_maximums = Vector3f(_param_fa_thr_max_x.get(), _param_fa_thr_max_y.get(), _param_fa_thr_max_z.get());
         _torque_maximums = Vector3f(_param_fa_trq_max_r.get(), _param_fa_trq_max_p.get(), _param_fa_trq_max_y.get());
-
-        _HOVER_THRUST_MIN = _param_fa_hover_min.get();
-        _HOVER_THRUST_MAX = _param_fa_hover_max.get();
-
-        _use_hover_thrust_estimate = _param_fa_hvr_thr_on.get() != 0;
     }
 }
 
 void FAPositionControl::Run()
 {
     if (should_exit()) {
-        _vehicle_angular_velocity_sub.unregisterCallback();
+        _vehicle_local_position_sub.unregisterCallback();
         exit_and_cleanup();
         return;
     }
@@ -64,7 +58,7 @@ void FAPositionControl::Run()
     parameters_update();
 
     // only run if we have new attitude data to process
-    if (_vehicle_angular_velocity_sub.updated()) {
+    if (_vehicle_local_position_sub.updated()) {
         
         // calculate dt
         const hrt_abstime time_stamp_now = hrt_absolute_time();
@@ -91,7 +85,7 @@ bool FAPositionControl::update(const float dt)
     vehicle_angular_velocity_s angular_vel{};
     _vehicle_angular_velocity_sub.copy(&angular_vel);
 
-    // fetch desired setpoints (from FlightTaskFAPosition)
+    // fetch desired setpoints
     trajectory_setpoint_s trajectory_sp{};
     _trajectory_setpoint_sub.copy(&trajectory_sp);
 
@@ -101,11 +95,10 @@ bool FAPositionControl::update(const float dt)
     vehicle_rates_setpoint_s angular_vel_sp{};
     _vehicle_rates_setpoint_sub.copy(&angular_vel_sp);
 
-    // fetch hover thrust estimate
+    // fetch hover thrust & land state
     hover_thrust_estimate_s hover_thrust_estimate{};
     _hover_thrust_estimate_sub.copy(&hover_thrust_estimate);
 
-    // see land_detected status
     vehicle_land_detected_s land_detected{};
     _vehicle_land_detected_sub.copy(&land_detected);
     
@@ -118,29 +111,27 @@ bool FAPositionControl::update(const float dt)
     Vector3f pos_sp(trajectory_sp.position);
     Vector3f vel_sp(trajectory_sp.velocity);
     Vector3f acc_sp(trajectory_sp.acceleration);
+    
+    // clean up incoming setpoints
+    //sanitize_vector(vel_sp);
+    sanitize_vector(acc_sp);
 
-    float current_yaw = Eulerf(q).psi(); 
-
-    float desired_yaw = PX4_ISFINITE(trajectory_sp.yaw) ? trajectory_sp.yaw : current_yaw;
-    Quatf q_d(Eulerf(0.0f, 0.0f, desired_yaw)); 
+    float desired_yaw = PX4_ISFINITE(trajectory_sp.yaw) ? trajectory_sp.yaw : Eulerf(q).psi();
+    Quatf q_d(Eulerf(0.0f, 0.0f, desired_yaw)); // hard coded zero roll-pitch for now
     
     float desired_yawspeed = PX4_ISFINITE(trajectory_sp.yawspeed) ? trajectory_sp.yawspeed : 0.0f;
-    Vector3f w_d(0.0f, 0.0f, desired_yawspeed);
+    Vector3f w_d(0.0f, 0.0f, desired_yawspeed); // hard coded zero roll-pitch for now
 
-    // compute position, velocity, and acceleration errors per-axis
-    for (int i = 0; i < 3; i++) {
-        _e_p(i) = PX4_ISFINITE(pos_sp(i)) ? (pos(i) - pos_sp(i)) : 0.0f;
-        _e_v(i) = PX4_ISFINITE(vel_sp(i)) ? (vel(i) - vel_sp(i)) : 0.0f;
-        acc_sp(i) = PX4_ISFINITE(acc_sp(i)) ? acc_sp(i) : 0.0f;
-    }
+    _e_p = compute_error(pos, pos_sp);
+    _e_v = compute_error(vel, vel_sp);
 
-    Dcmf R(q); // body attitude
-    Dcmf R_d(q_d); // desired attitude
+    Dcmf R(q);      // body attitude
+    Dcmf R_d(q_d);  // desired attitude
 
     // (R_d^T * R) - (R^T * R_d)
     Dcmf R_error_matrix = (R_d.transpose() * R) - (R.transpose() * R_d);
 
-    // compute vee(R_error_matrix)
+    // compute 1/2 * vee(R_error_matrix)
     _e_R(0) = R_error_matrix(2, 1) * 0.5f;
     _e_R(1) = R_error_matrix(0, 2) * 0.5f;
     _e_R(2) = R_error_matrix(1, 0) * 0.5f;
@@ -154,65 +145,92 @@ bool FAPositionControl::update(const float dt)
     static constexpr float g = 9.81f;
     Vector3f z(0.0f, 0.0f, -1.0f);
     
-    float hover_thrust = 0.5f;
     bool is_airborne = !land_detected.landed;
 
-    // use the dynamic estimator if the user enabled it, we are airborne, and the data is valid
-    if (_use_hover_thrust_estimate && is_airborne && 
-        hover_thrust_estimate.valid && PX4_ISFINITE(hover_thrust_estimate.hover_thrust)) {
-        
-        hover_thrust = math::constrain(hover_thrust_estimate.hover_thrust, _HOVER_THRUST_MIN, _HOVER_THRUST_MAX);
-    }
-    
     // F_n = m*a_d - K_p*e_p - K_v*e_v + m*g*e_D
-    Vector3f a_n = acc_sp + g * z - _k_p.emult(_e_p) - _k_v.emult(_e_v);
+    Vector3f F_n = _mass * (acc_sp + g * z) - _k_p.emult(_e_p) - _k_v.emult(_e_v);
     
     // F_b = R^T * F_n
     Dcmf R_transpose(q.inversed()); 
-    Vector3f a_b = R_transpose * a_n;
+    Vector3f F_b = R_transpose * F_n;
 
+    // normalize thrust for the PX4 mixer
+    _vehicle_thrust_setpoint = project_wrench(F_b, _thrust_maximums);
 
-    // Normalize the force to [-1, 1] (N) for the PX4 mixer
-    for (int i = 0; i < 3; ++i) {
-        if (_use_hover_thrust_estimate) {
-            // use the adaptive hover thrust fraction
-            float max_thrust_ratio = _thrust_maximums(2) / _thrust_maximums(i); 
-            _vehicle_thrust_setpoint(i) = a_b(i) * (hover_thrust / g) * max_thrust_ratio;
-        } else {
-            // direct force calculation based purely on mass and maximums
-            float required_force = a_b(i) * _mass;
-            _vehicle_thrust_setpoint(i) = required_force / _thrust_maximums(i);
-        }
-
-        // if landed, command 0 thrust to prevent spool-up (unless a takeoff accel is commanded)
-        if (!is_airborne && vel_sp.length() < 0.1f) {
-            _vehicle_thrust_setpoint(i) = 0.0f;
-        } else {
-            _vehicle_thrust_setpoint(i) = math::constrain(_vehicle_thrust_setpoint(i), -1.0f, 1.0f);
-        }
-    }
-
-    // compute torque setpoint
+    // compute and normalize torque setpoint
     Vector3f tau_b = -_k_r.emult(_e_R) - _k_w.emult(_e_w);
+    _vehicle_torque_setpoint = project_wrench(tau_b, _torque_maximums);
 
-    // normalize the torque to [-1, 1] (N*m) for the PX4 mixer
-    for (int i = 0; i < 3; ++i) {
-        _vehicle_torque_setpoint(i) = tau_b(i) / _torque_maximums(i);
+    if (!is_airborne && vel_sp.length() < 0.1f) {
+        _vehicle_thrust_setpoint.zero();
+        _vehicle_torque_setpoint.zero();
     }
 
-    // publish outputs
-    vehicle_thrust_setpoint_s thrust_msg{};
-    thrust_msg.timestamp = hrt_absolute_time();
-    _vehicle_thrust_setpoint.copyTo(thrust_msg.xyz); // Copy normalized vector
-    _vehicle_thrust_setpoint_pub.publish(thrust_msg);
-
-    vehicle_torque_setpoint_s torque_msg{};
-    torque_msg.timestamp = hrt_absolute_time();
-    _vehicle_torque_setpoint.copyTo(torque_msg.xyz); // Copy normalized vector
-    _vehicle_torque_setpoint_pub.publish(torque_msg);
+    // publish outputs using the generic template
+    publish_actuator_setpoint<vehicle_thrust_setpoint_s>(_vehicle_thrust_setpoint_pub, _vehicle_thrust_setpoint);
+    publish_actuator_setpoint<vehicle_torque_setpoint_s>(_vehicle_torque_setpoint_pub, _vehicle_torque_setpoint);
 
     return true;
 }
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+// cleans up vectors that may contain NaNs from the setpoints
+void FAPositionControl::sanitize_vector(Vector3f& vec) 
+{
+    for (int i = 0; i < 3; ++i) {
+        if (!PX4_ISFINITE(vec(i))) vec(i) = 0.0f;
+    }
+}
+
+// calculates the error between a state and a setpoint, defaulting to 0 if the setpoint is NaN
+Vector3f FAPositionControl::compute_error(const Vector3f& state, const Vector3f& setpoint) 
+{
+    Vector3f error_vec;
+    for (int i = 0; i < 3; ++i) {
+        error_vec(i) = PX4_ISFINITE(setpoint(i)) ? (state(i) - setpoint(i)) : 0.0f;
+    }
+    return error_vec;
+}
+
+// safely normalizes a 3D command vector against maximum limits using Wrench Projection
+Vector3f FAPositionControl::project_wrench(const Vector3f& command, const Vector3f& max_limits) 
+{
+    Vector3f normalized_cmd;
+    float max_saturation = 0.0f;
+
+    // 1. Calculate unconstrained normalized commands and find the most saturated axis
+    for (int i = 0; i < 3; ++i) {
+        float limit = math::max(max_limits(i), 0.01f);
+        normalized_cmd(i) = command(i) / limit;
+        
+        // Track the absolute maximum saturation factor across all 3 axes
+        float saturation = fabsf(normalized_cmd(i));
+        if (saturation > max_saturation) {
+            max_saturation = saturation;
+        }
+    }
+
+    // 2. Wrench Projection: If ANY axis exceeds 1.0, scale ALL axes down uniformly
+    if (max_saturation > 1.0f) {
+        normalized_cmd /= max_saturation; 
+    }
+
+    return normalized_cmd;
+}
+
+// a template to handle the identical boilerplate for publishing thrust and torque
+template <typename MsgType, typename PubType>
+void FAPositionControl::publish_actuator_setpoint(PubType& publisher, const Vector3f& data) 
+{
+    MsgType msg{};
+    msg.timestamp = hrt_absolute_time();
+    data.copyTo(msg.xyz);
+    publisher.publish(msg);
+}
+
 
 // =============================================================================
 // REQUIRED PX4 MODULE BOILERPLATE
@@ -257,7 +275,7 @@ int FAPositionControl::print_usage(const char *reason)
 Fully actuated position controller.
 )DESCR_STR");
 
-    PRINT_MODULE_USAGE_NAME("fa_position", "controller");
+    PRINT_MODULE_USAGE_NAME("fa_pos_control", "controller");
     PRINT_MODULE_USAGE_COMMAND("start");
     PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 
@@ -269,7 +287,5 @@ extern "C" __EXPORT int fa_pos_control_main(int argc, char *argv[]);
 
 int fa_pos_control_main(int argc, char *argv[])
 {
-    // Assuming your class inherits from ModuleBase, 
-    // it already has a built-in main() function to handle start/stop/status.
     return FAPositionControl::main(argc, argv);
 }

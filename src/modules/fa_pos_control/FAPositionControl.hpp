@@ -7,6 +7,7 @@
 #pragma once
 
 #include <matrix/matrix/math.hpp>
+#include <lib/matrix/matrix/math.hpp>
 #include <perf/perf_counter.h>
 
 #include <px4_platform_common/px4_config.h>
@@ -54,30 +55,22 @@ public:
      */
     bool update(const float dt);
 
-    /**
-     * set the k_p and k_v gains for the controller
-     * @param kp the position error constant
-     * @param kv the velocity error constant
-     */
-    void setGains(const matrix::Vector3f &kp, const matrix::Vector3f &kv) { 
-        _k_p = kp;
-        _k_v = kv;
-    }
-
 private:
     void Run() override;
     void parameters_update(bool force = false);
 
-    bool _use_hover_thrust_estimate{false};
+    // Helper Functions
+    void sanitize_vector(matrix::Vector3f& vec);
+    matrix::Vector3f compute_error(const matrix::Vector3f& state, const matrix::Vector3f& setpoint);
+    matrix::Vector3f project_wrench(const matrix::Vector3f& command, const matrix::Vector3f& max_limits);
+    template <typename MsgType, typename PubType> void publish_actuator_setpoint(PubType& publisher, const matrix::Vector3f& data);
+
     // Values
     float _mass;
 
     // Limits
     matrix::Vector3f _thrust_maximums;
     matrix::Vector3f _torque_maximums;
-
-    float _HOVER_THRUST_MIN;
-    float _HOVER_THRUST_MAX;
 
     // Gains
     matrix::Vector3f _k_p;
@@ -101,17 +94,17 @@ private:
     // uORB Subscriptions
     uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
-    uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
     uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
     uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
     uORB::Subscription _vehicle_rates_setpoint_sub{ORB_ID(vehicle_rates_setpoint)};
-
+    
     uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
     uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
-
+    uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+    
     // uORB Callbacks
-    uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
+    uORB::SubscriptionCallbackWorkItem _vehicle_local_position_sub{this, ORB_ID(vehicle_local_position)};
 
     // uORB Publishers
     uORB::Publication<vehicle_thrust_setpoint_s>  _vehicle_thrust_setpoint_pub{ORB_ID(vehicle_thrust_setpoint)};
@@ -143,11 +136,7 @@ private:
 
         (ParamFloat<px4::params::FA_TRQ_MAX_R>) _param_fa_trq_max_r,
         (ParamFloat<px4::params::FA_TRQ_MAX_P>) _param_fa_trq_max_p,
-        (ParamFloat<px4::params::FA_TRQ_MAX_Y>) _param_fa_trq_max_y,
-
-        (ParamFloat<px4::params::FA_HOVER_MIN>) _param_fa_hover_min,
-        (ParamFloat<px4::params::FA_HOVER_MAX>) _param_fa_hover_max,
-        (ParamInt<px4::params::FA_HVR_THR_ON>) _param_fa_hvr_thr_on
+        (ParamFloat<px4::params::FA_TRQ_MAX_Y>) _param_fa_trq_max_y
     );
 
 };
