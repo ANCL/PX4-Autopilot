@@ -18,6 +18,7 @@ param set-default CA_ROTOR0_AX -0.2113
 param set-default CA_ROTOR0_AY -0.3660
 param set-default CA_ROTOR0_AZ -0.9063
 param set-default CA_ROTOR0_KM 0.0185
+param set-default CA_ROTOR0_CT 17.6580
 
 # ==========================================
 # ROTOR 1 (Base Angle: 90.0°, CW)
@@ -30,6 +31,7 @@ param set-default CA_ROTOR1_AX 0.4226
 param set-default CA_ROTOR1_AY 0.0000
 param set-default CA_ROTOR1_AZ -0.9063
 param set-default CA_ROTOR1_KM -0.0185
+param set-default CA_ROTOR1_CT 17.6580
 
 # ==========================================
 # ROTOR 2 (Base Angle: 150.0°, CCW)
@@ -42,6 +44,7 @@ param set-default CA_ROTOR2_AX -0.2113
 param set-default CA_ROTOR2_AY 0.3660
 param set-default CA_ROTOR2_AZ -0.9063
 param set-default CA_ROTOR2_KM 0.0185
+param set-default CA_ROTOR2_CT 17.6580
 
 # ==========================================
 # ROTOR 3 (Base Angle: 210.0°, CW)
@@ -54,6 +57,7 @@ param set-default CA_ROTOR3_AX -0.2113
 param set-default CA_ROTOR3_AY -0.3660
 param set-default CA_ROTOR3_AZ -0.9063
 param set-default CA_ROTOR3_KM -0.0185
+param set-default CA_ROTOR3_CT 17.6580
 
 # ==========================================
 # ROTOR 4 (Base Angle: 270.0°, CCW)
@@ -66,6 +70,7 @@ param set-default CA_ROTOR4_AX 0.4226
 param set-default CA_ROTOR4_AY 0.0000
 param set-default CA_ROTOR4_AZ -0.9063
 param set-default CA_ROTOR4_KM 0.0185
+param set-default CA_ROTOR4_CT 17.6580
 
 # ==========================================
 # ROTOR 5 (Base Angle: 330.0°, CW)
@@ -78,6 +83,7 @@ param set-default CA_ROTOR5_AX -0.2113
 param set-default CA_ROTOR5_AY 0.3660
 param set-default CA_ROTOR5_AZ -0.9063
 param set-default CA_ROTOR5_KM -0.0185
+param set-default CA_ROTOR5_CT 17.6580
 
 # --- GAZEBO MOTOR MAPPINGS ---
 param set-default SIM_GZ_EC_FUNC1 101
