@@ -40,6 +40,8 @@ void FAPositionControl::parameters_update(bool force)
         _k_v = Vector3f(_param_fa_v_x.get(), _param_fa_v_y.get(), _param_fa_v_z.get());
         _k_r = Vector3f(_param_fa_r_r.get(), _param_fa_r_p.get(), _param_fa_r_y.get());
         _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_p.get(), _param_fa_w_y.get()); 
+        _k_i = Vector3f(_param_fa_i_x.get(), _param_fa_i_y.get(), _param_fa_i_z.get());
+        _int_limit = _param_fa_int_lim.get();
 
         _thrust_maximums = Vector3f(_param_fa_thr_max_x.get(), _param_fa_thr_max_y.get(), _param_fa_thr_max_z.get());
         _torque_maximums = Vector3f(_param_fa_trq_max_r.get(), _param_fa_trq_max_p.get(), _param_fa_trq_max_y.get());
@@ -140,15 +142,31 @@ bool FAPositionControl::update(const float dt)
     _e_w = w - (R.transpose() * R_d) * w_d;
 
     // ---------------------------------------------------------
+    // INTEGRATION & ANTI-WINDUP (WiP)
+    // ---------------------------------------------------------
+    bool is_airborne = !land_detected.landed;
+
+    if (is_airborne) {
+        // accumulate error over time (Riemann sum)
+        _e_p_int += _e_p * dt;
+
+        // clamp the accumulated error component-wise
+        for (int i = 0; i < 3; i++) {
+            _e_p_int(i) = math::constrain(_e_p_int(i), -_int_limit, _int_limit);
+        }
+    } else {
+        // reset the integrator when on the ground to prevent takeoff spikes
+        _e_p_int.zero();
+    }
+
+    // ---------------------------------------------------------
     // APPLY CONTROL LAW
     // ---------------------------------------------------------
     static constexpr float g = 9.81f;
     Vector3f z(0.0f, 0.0f, -1.0f);
     
-    bool is_airborne = !land_detected.landed;
-
-    // F_n = m*a_d - K_p*e_p - K_v*e_v + m*g*e_D
-    Vector3f F_n = _mass * (acc_sp + g * z) - _k_p.emult(_e_p) - _k_v.emult(_e_v);
+    // F_n = m*a_d - K_p*e_p - K_v*e_v - K_i*int(e_p) + m*g*e_D
+    Vector3f F_n = _mass * (acc_sp + g * z) - _k_p.emult(_e_p) - _k_v.emult(_e_v) - _k_i.emult(_e_p_int);
     
     // F_b = R^T * F_n
     Dcmf R_transpose(q.inversed()); 
@@ -201,19 +219,19 @@ Vector3f FAPositionControl::project_wrench(const Vector3f& command, const Vector
     Vector3f normalized_cmd;
     float max_saturation = 0.0f;
 
-    // 1. Calculate unconstrained normalized commands and find the most saturated axis
+    // calculate unconstrained normalized commands and find the most saturated axis
     for (int i = 0; i < 3; ++i) {
         float limit = math::max(max_limits(i), 0.01f);
         normalized_cmd(i) = command(i) / limit;
         
-        // Track the absolute maximum saturation factor across all 3 axes
+        // track the absolute maximum saturation factor across all 3 axes
         float saturation = fabsf(normalized_cmd(i));
         if (saturation > max_saturation) {
             max_saturation = saturation;
         }
     }
 
-    // 2. Wrench Projection: If ANY axis exceeds 1.0, scale ALL axes down uniformly
+    //  Wrench Projection: if any axis exceeds 1.0, scale ALL axes down uniformly
     if (max_saturation > 1.0f) {
         normalized_cmd /= max_saturation; 
     }

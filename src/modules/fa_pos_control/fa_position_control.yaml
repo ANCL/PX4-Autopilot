@@ -5,7 +5,7 @@ parameters:
       FA_MASS:
         description: Vehicle mass
         type: float
-        default: 2.84
+        default: 3.70
         unit: kg
       FA_P_X:
         description: Position P gain X
@@ -58,17 +58,17 @@ parameters:
       FA_THR_MAX_X:
         description: Maximum Thrust X
         type: float
-        default: 5.5
+        default: 68.6
         unit: N
       FA_THR_MAX_Y:
         description: Maximum Thrust Y
         type: float
-        default: 4.8
+        default: 68.6
         unit: N
       FA_THR_MAX_Z:
         description: Maximum Thrust Z
         type: float
-        default: 35.3
+        default: 68.6
         unit: N
       FA_TRQ_MAX_R:
         description: Maximum Torque Roll
@@ -85,15 +85,3 @@ parameters:
         type: float
         default: 1.0
         unit: Nm
-      FA_HOVER_MIN:
-        description: Minimum Hover Thrust
-        type: float
-        default: 0.1
-      FA_HOVER_MAX:
-        description: Maximum Hover Thrust
-        type: float
-        default: 0.9
-      FA_HOVER_THR_ON:
-        description: Use Hover Thrust Estimate
-        type: boolean
-        default: 0

@@ -3,7 +3,8 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**"
+                "/home/dionw/Code/fy690s_new/fy690s_ws/px4/PX4-Autopilot/**",
+                "/opt/ros/jazzy/include/**"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",

@@ -71,19 +71,22 @@ private:
     // Limits
     matrix::Vector3f _thrust_maximums;
     matrix::Vector3f _torque_maximums;
+    float _int_limit{1.0f}; // Maximum allowed value for the integral state
 
     // Gains
     matrix::Vector3f _k_p;
     matrix::Vector3f _k_v;
     matrix::Vector3f _k_r;
     matrix::Vector3f _k_w;
+    matrix::Vector3f _k_i;
     
     // Errors
-    matrix::Vector3f _e_p; // position error
-    matrix::Vector3f _e_v; // velocitiy error
-    matrix::Vector3f _e_R; // rotational error
-    matrix::Vector3f _e_w; // angular vel error
-    
+    matrix::Vector3f _e_p;          // position error
+    matrix::Vector3f _e_v;          // velocitiy error
+    matrix::Vector3f _e_R;          // rotational error
+    matrix::Vector3f _e_w;          // angular vel error
+    matrix::Vector3f _e_p_int{};    // accumulated position error
+
     // Setpoints
     matrix::Vector3f _vehicle_thrust_setpoint; // normalized [-1, 1]
     matrix::Vector3f _vehicle_torque_setpoint; // normalized [-1, 1]
@@ -121,6 +124,12 @@ private:
         (ParamFloat<px4::params::FA_V_X>) _param_fa_v_x,
         (ParamFloat<px4::params::FA_V_Y>) _param_fa_v_y,
         (ParamFloat<px4::params::FA_V_Z>) _param_fa_v_z,
+
+        (ParamFloat<px4::params::FA_I_X>) _param_fa_i_x,
+        (ParamFloat<px4::params::FA_I_Y>) _param_fa_i_y,
+        (ParamFloat<px4::params::FA_I_Z>) _param_fa_i_z,
+
+        (ParamFloat<px4::params::FA_INT_LIM>) _param_fa_int_lim,
 
         (ParamFloat<px4::params::FA_R_R>) _param_fa_r_r,
         (ParamFloat<px4::params::FA_R_P>) _param_fa_r_p,

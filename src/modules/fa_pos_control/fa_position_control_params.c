@@ -17,7 +17,7 @@
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_MASS, 2.84f);
+PARAM_DEFINE_FLOAT(FA_MASS, 3.70f);
 
 /**
  * Position P Gain X
@@ -29,7 +29,7 @@ PARAM_DEFINE_FLOAT(FA_MASS, 2.84f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_X, 2.0f);
+PARAM_DEFINE_FLOAT(FA_P_X, 8.0f);
 
 /**
  * Position P Gain Y
@@ -41,7 +41,7 @@ PARAM_DEFINE_FLOAT(FA_P_X, 2.0f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_Y, 2.0f);
+PARAM_DEFINE_FLOAT(FA_P_Y, 8.0f);
 
 /**
  * Position P Gain Z
@@ -53,7 +53,7 @@ PARAM_DEFINE_FLOAT(FA_P_Y, 2.0f);
  * @max 50.0
  * @decimal 2
  */
-PARAM_DEFINE_FLOAT(FA_P_Z, 2.0f);
+PARAM_DEFINE_FLOAT(FA_P_Z, 4.0f);
 
 /**
  * Velocity P Gain X
@@ -174,7 +174,7 @@ PARAM_DEFINE_FLOAT(FA_W_Y, 1.0f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 63.9f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 68.6f);
 
 /**
  * Maximum Thrust Y
@@ -187,7 +187,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 63.9f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 63.9f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 68.6f);
 
 /**
  * Maximum Thrust Z
@@ -200,7 +200,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 63.9f);
  * @max 500.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 63.9f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 68.6f);
 
 /**
  * Maximum Torque Roll
@@ -240,3 +240,11 @@ PARAM_DEFINE_FLOAT(FA_TRQ_MAX_P, 2.0f);
  * @decimal 2
  */
 PARAM_DEFINE_FLOAT(FA_TRQ_MAX_Y, 2.0f);
+
+PARAM_DEFINE_FLOAT(FA_I_X, 1.0f);
+
+PARAM_DEFINE_FLOAT(FA_I_Y, 1.0f);
+
+PARAM_DEFINE_FLOAT(FA_I_Z, 1.0f);
+
+PARAM_DEFINE_FLOAT(FA_INT_LIM, 0.0f); // DISABLED BY DEFAULT
