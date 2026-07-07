@@ -272,6 +272,10 @@ ControlAllocator::update_effectiveness_source()
 		case EffectivenessSource::SPACECRAFT_3D:
 			// spacecraft_allocation does allocation and publishes directly to actuator_motors topic
 			break;
+		
+		case EffectivenessSource::FIXED_TILT_HEX:
+			tmp = new ActuatorEffectivenessFixedTiltHex(this);
+			break;
 
 		default:
 			PX4_ERR("Unknown airframe");
