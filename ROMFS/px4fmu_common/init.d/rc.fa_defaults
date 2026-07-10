@@ -9,8 +9,8 @@ set VEHICLE_TYPE mc
 
 param set-default CA_ROTOR_COUNT 6
 param set-default MAV_TYPE 13 # Hexarotor
-param set-default CA_AIRFRAME 9 # Custom Airframe
-param set-default CA_METHOD 0 # Pseduo-inverse
+param set-default CA_AIRFRAME 16 # Fixed-tilt Hex
+param set-default CA_METHOD 3 # Quadratic Programming
 
 
 if param compare IMU_GYRO_RATEMAX 400
