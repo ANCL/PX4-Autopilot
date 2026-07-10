@@ -38,9 +38,57 @@ px4_add_library(ControlAllocation
 	ControlAllocationPseudoInverse.hpp
 	ControlAllocationSequentialDesaturation.cpp
 	ControlAllocationSequentialDesaturation.hpp
+	ControlAllocationQP.cpp
+	ControlAllocationQP.hpp
+	generated/fa_closest_workspace.c
+	generated/fa_margin_workspace.c
+	generated/src/algebra_libs.c
+	generated/src/auxil.c
+	generated/src/csc_math.c
+	generated/src/csc_utils.c
+	generated/src/error.c
+	generated/src/kkt.c
+	generated/src/matrix.c
+	generated/src/osqp_api.c
+	generated/src/qdldl.c
+	generated/src/qdldl_interface.c
+	generated/src/scaling.c
+	generated/src/util.c
+	generated/src/vector.c
+	#control_allocation_qp_params.c
 )
+
+# Relax compiler flags for generated and OSQP C files
+set_source_files_properties(
+    generated/fa_closest_workspace.c
+    generated/fa_margin_workspace.c
+    generated/src/algebra_libs.c
+    generated/src/auxil.c
+    generated/src/csc_math.c
+    generated/src/csc_utils.c
+    generated/src/error.c
+    generated/src/kkt.c
+    generated/src/matrix.c
+    generated/src/osqp_api.c
+    generated/src/qdldl.c
+    generated/src/qdldl_interface.c
+    generated/src/scaling.c
+    generated/src/util.c
+    generated/src/vector.c
+    PROPERTIES COMPILE_FLAGS "-Wno-error"
+)
+
 target_compile_options(ControlAllocation PRIVATE ${MAX_CUSTOM_OPT_LEVEL})
-target_include_directories(ControlAllocation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_include_directories(ControlAllocation
+	PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}
+	PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/generated
+		${CMAKE_CURRENT_SOURCE_DIR}/generated/inc/public
+		${CMAKE_CURRENT_SOURCE_DIR}/generated/inc/private
+)
+
 target_link_libraries(ControlAllocation PRIVATE mathlib)
 
 px4_add_unit_gtest(SRC ControlAllocationPseudoInverseTest.cpp LINKLIBS ControlAllocation)

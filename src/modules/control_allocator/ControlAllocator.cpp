@@ -182,6 +182,16 @@ ControlAllocator::update_allocation_method(bool force)
 				_control_allocation[i] = new ControlAllocationSequentialDesaturation();
 				break;
 
+			case AllocationMethod::QUADRATIC_PROGRAMMING:
+				if (_effectiveness_source_id == EffectivenessSource::FIXED_TILT_HEX) {
+					_control_allocation[i] = new ControlAllocationQP();
+
+				} else {
+					PX4_ERR("Generated FA QP only supports FixedTiltHex");
+				}
+
+				break;
+
 			default:
 				PX4_ERR("Unknown allocation method");
 				break;
@@ -807,6 +817,9 @@ int ControlAllocator::print_status()
 	case AllocationMethod::AUTO:
 		PX4_INFO("Method: Auto");
 		break;
+
+	case AllocationMethod::QUADRATIC_PROGRAMMING:
+		PX4_INFO("Method: Quadratic programming");
 	}
 
 	// Print current airframe
