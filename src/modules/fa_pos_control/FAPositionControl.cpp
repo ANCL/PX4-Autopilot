@@ -173,11 +173,17 @@ bool FAPositionControl::update(const float dt)
     Vector3f F_b = R_transpose * F_n;
 
     // normalize thrust for the PX4 mixer
-    _vehicle_thrust_setpoint = project_wrench(F_b, _thrust_maximums);
+    //_vehicle_thrust_setpoint = project_wrench(F_b, _thrust_maximums);
+    
 
     // compute and normalize torque setpoint
     Vector3f tau_b = -_k_r.emult(_e_R) - _k_w.emult(_e_w);
-    _vehicle_torque_setpoint = project_wrench(tau_b, _torque_maximums);
+    //_vehicle_torque_setpoint = project_wrench(tau_b, _torque_maximums);
+
+    for (int i = 0; i < 3; ++i) {
+        _vehicle_thrust_setpoint(i) = F_b(i) / _thrust_maximums(i);
+        _vehicle_torque_setpoint(i) = tau_b(i) / _torque_maximums(i); 
+    }
 
     if (!is_airborne && vel_sp.length() < 0.1f) {
         _vehicle_thrust_setpoint.zero();

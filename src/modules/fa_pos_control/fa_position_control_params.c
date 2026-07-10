@@ -3,7 +3,6 @@
  *
  * Parameters for the fully actuated hexarotor position controller.
  *
- * @author Your Name <ddwalton@ualberta.ca>
  */
 
 /**
@@ -174,7 +173,7 @@ PARAM_DEFINE_FLOAT(FA_W_Y, 1.0f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 68.6f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 61.2f);
 
 /**
  * Maximum Thrust Y
@@ -187,7 +186,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_X, 68.6f);
  * @max 200.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 68.6f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 61.2f);
 
 /**
  * Maximum Thrust Z
@@ -200,7 +199,7 @@ PARAM_DEFINE_FLOAT(FA_THR_MAX_Y, 68.6f);
  * @max 500.0
  * @decimal 1
  */
-PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 68.6f);
+PARAM_DEFINE_FLOAT(FA_THR_MAX_Z, 61.2f);
 
 /**
  * Maximum Torque Roll
