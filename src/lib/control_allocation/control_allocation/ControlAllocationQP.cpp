@@ -26,20 +26,8 @@ ControlAllocationQP::setEffectivenessMatrix(
 		num_actuators,
 		update_normalization_scale);
 
-	/* =====================================================================
-	 * BLOCK 1: FIXED-PROBLEM CONSISTENCY CHECK
-	 *
-	 * Inputs:
-	 *   PX4 effectiveness matrix, actuator trim, actuator bounds.
-	 *
-	 * Purpose:
-	 *   Verify that the runtime PX4 configuration matches the fixed matrix and
-	 *   bounds used by fa_wrench_codegen.py. The generated QP matrices are
-	 *   valid only for this fixed problem family.
-	 *
-	 * Output:
-	 *   _matrix_consistent
-	 * ===================================================================== */
+	// verify that the runtime PX4 configuration matches the fixed matrix and bounds used by fa_wrench_codegen.py. 
+	// (see ./generated/*)
 
 	(void)update_normalization_scale;
     _matrix_consistent = (_num_actuators == FA_NP);
@@ -47,6 +35,7 @@ ControlAllocationQP::setEffectivenessMatrix(
     if (_matrix_consistent) {
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
             for (int actuator = 0; actuator < FA_NP; ++actuator) {
+                // check that effectiveness matrix matches precomputed FA_B from python script
                 if (fabsf(_effectiveness(axis, actuator) - FA_B[axis][actuator]) > 0.01f) {
                     _matrix_consistent = false;
                 }
@@ -56,6 +45,7 @@ ControlAllocationQP::setEffectivenessMatrix(
 
     if (_matrix_consistent) {
         for (int actuator = 0; actuator < FA_NP; ++actuator) {
+            // check trims & tolerances match
             if (fabsf(actuator_trim(actuator)) > 0.01f
                 || fabsf(linearization_point(actuator)) > 0.01f
                 || fabsf(_actuator_min(actuator) - FA_MU_MIN[actuator]) > 0.01f
@@ -71,18 +61,9 @@ ControlAllocationQP::allocate()
 {
 	_prev_actuator_sp = _actuator_sp;
 
-	/* =====================================================================
-	 * BLOCK 2: RUNTIME CONTROL INPUT AND OUTPUT STORAGE
-	 *
-	 * Input:
-	 *   _control_sp = [tau_x, tau_y, tau_z, thrust_x, thrust_y, thrust_z].
-	 *
-	 * Purpose:
-	 *   Prepare the changing vectors used by the two generated OSQP problems.
-	 *
-	 * Output:
-	 *   selected actuator setpoint in _actuator_sp.
-	 * ===================================================================== */
+	// _control_sp = [tau_x, tau_y, tau_z, thrust_x, thrust_y, thrust_z]
+	
+	// prepare the changing vectors used by the two generated OSQP problems
 
 	if (!_matrix_consistent || _num_actuators != FA_NP) {
 		_actuator_sp = _prev_actuator_sp;
@@ -103,7 +84,7 @@ ControlAllocationQP::allocate()
 	}
 
 	/* =====================================================================
-	 * BLOCK 3: BOUNDED CLOSEST-CONTROL PROJECTION
+	 * Bounded closest-control projection
 	 *
 	 * Problem:
 	 *       minimize 0.5 ||Sw(C mu - c_des)||_2^2
@@ -126,7 +107,7 @@ ControlAllocationQP::allocate()
     }
 
     if (wrench_is_corrupted) {
-        // zero out the demands so the drone doesn't spin out of control
+        // zero out the NaN demands 
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
             control_des[axis] = 0.0f; 
         }
@@ -138,7 +119,6 @@ ControlAllocationQP::allocate()
 						       * FA_SW[axis]
 						       * FA_SW[axis]
 						       * control_des[axis];
-            //PX4_INFO("closest_q: axis(%d), actuator(%d) = %.2f", axis, actuator, static_cast<double>(closest_q[actuator]));
 		}
 	}
 
@@ -202,11 +182,10 @@ ControlAllocationQP::allocate()
 	bool feasible = scaled_error <= FA_FEASIBILITY_TOL;
 	OSQPFloat saturation_margin = std::numeric_limits<OSQPFloat>::quiet_NaN();
 
+    PX4_INFO("scaled_error = %.4f", static_cast<double>(scaled_error));
+
 	/* =====================================================================
-	 * BLOCK 4: FEASIBLE REQUEST -> MAXIMUM SATURATION-MARGIN ALLOCATION
-	 *
-	 * Entered only when the projected control error is within the configured
-	 * numerical membership tolerance.
+	 * Feasible request -> Max satuaration margin allocation
 	 *
 	 * Problem:
 	 *       maximize m
@@ -217,9 +196,12 @@ ControlAllocationQP::allocate()
 	 *       0 <= m <= 0.5
 	 *
 	 * Output:
-	 *   exact max-min-margin allocation when the margin solve succeeds.
+	 *   	exact max-min-margin allocation when the margin solve succeeds.
 	 * ===================================================================== */
 
+
+	// entered only when the projected control error is within the configured
+	// numerical membership tolerance.
 	if (feasible) {
 		OSQPFloat margin_l[FA_MARGIN_CONSTRAINTS] = {0};
 		OSQPFloat margin_u[FA_MARGIN_CONSTRAINTS] = {0};
@@ -288,16 +270,7 @@ ControlAllocationQP::allocate()
 		}
 	}
 
-	/* =====================================================================
-	 * BLOCK 5: FINAL NUMERICAL CHECKS AND DIAGNOSTICS
-	 *
-	 * Checks:
-	 *   selected actuator bounds.
-	 *
-	 * Outputs:
-	 *   _actuator_sp and last-solve diagnostics.
-	 * ===================================================================== */
-
+    // final numerical checks
 	bool bounds_valid = true;
 
 	for (int actuator = 0; actuator < FA_NP; ++actuator) {
