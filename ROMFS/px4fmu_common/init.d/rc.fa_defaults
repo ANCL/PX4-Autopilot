@@ -10,7 +10,7 @@ set VEHICLE_TYPE mc
 param set-default CA_ROTOR_COUNT 6
 param set-default MAV_TYPE 13 # Hexarotor
 param set-default CA_AIRFRAME 9 # Custom Airframe
-param set-default CA_METHOD 0 # Pseduo-inverse
+param set-default CA_METHOD 0 # Pseudo-inverse
 
 
 if param compare IMU_GYRO_RATEMAX 400
@@ -25,5 +25,5 @@ param set-default RTL_DESCEND_ALT 10
 
 param set-default GPS_UBX_DYNMODEL 6
 
-# lower RNG_FOG since MC are expected to fly closer over obstacles
+# Lower RNG_FOG since MC are expected to fly closer over obstacles
 param set-default EKF2_RNG_FOG 1.0
