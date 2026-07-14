@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <limits>
-
+#include <algorithm>
 
 #include "generated/fa_closest_workspace.h"
 #include "generated/fa_margin_workspace.h"
@@ -13,281 +13,243 @@
 
 void
 ControlAllocationQP::setEffectivenessMatrix(
-	const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
-	const ActuatorVector &actuator_trim,
-	const ActuatorVector &linearization_point,
-	int num_actuators,
-	bool update_normalization_scale)
+    const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
+    const ActuatorVector &actuator_trim,
+    const ActuatorVector &linearization_point,
+    int num_actuators,
+    bool update_normalization_scale)
 {
-	ControlAllocation::setEffectivenessMatrix(
-		effectiveness,
-		actuator_trim,
-		linearization_point,
-		num_actuators,
-		update_normalization_scale);
+    ControlAllocation::setEffectivenessMatrix(
+        effectiveness, actuator_trim, linearization_point,
+        num_actuators, update_normalization_scale);
 
-	// verify that the runtime PX4 configuration matches the fixed matrix and bounds used by fa_wrench_codegen.py. 
-	// (see ./generated/*)
+    (void)update_normalization_scale;
+    _matrix_consistent = checkMatrixConsistency(effectiveness, actuator_trim, linearization_point);
+}
 
-	(void)update_normalization_scale;
-    _matrix_consistent = (_num_actuators == FA_NP);
-
-    if (_matrix_consistent) {
-        for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-            for (int actuator = 0; actuator < FA_NP; ++actuator) {
-                // check that effectiveness matrix matches precomputed FA_B from python script
-                if (fabsf(_effectiveness(axis, actuator) - FA_B[axis][actuator]) > 0.01f) {
-                    _matrix_consistent = false;
-                }
-            }
-        }
+bool 
+ControlAllocationQP::checkMatrixConsistency(
+    const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness,
+    const ActuatorVector &actuator_trim,
+    const ActuatorVector &linearization_point)
+{
+    if (_num_actuators != FA_NP) {
+        return false;
     }
 
-    if (_matrix_consistent) {
+    // check that effectiveness matrix matches precomputed FA_B
+    for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
         for (int actuator = 0; actuator < FA_NP; ++actuator) {
-            // check trims & tolerances match
-            if (fabsf(actuator_trim(actuator)) > 0.01f
-                || fabsf(linearization_point(actuator)) > 0.01f
-                || fabsf(_actuator_min(actuator) - FA_MU_MIN[actuator]) > 0.01f
-                || fabsf(_actuator_max(actuator) - FA_MU_MAX[actuator]) > 0.01f) {
-                _matrix_consistent = false;
+            if (fabsf(effectiveness(axis, actuator) - FA_B[axis][actuator]) > FA_MATRIX_TOL) {
+                return false;
             }
         }
     }
+
+    // check trims & tolerances match
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        if (fabsf(actuator_trim(actuator)) > FA_MATRIX_TOL || fabsf(linearization_point(actuator)) > FA_MATRIX_TOL) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void
 ControlAllocationQP::allocate()
 {
-	_prev_actuator_sp = _actuator_sp;
+    _prev_actuator_sp = _actuator_sp;
 
-	// _control_sp = [tau_x, tau_y, tau_z, thrust_x, thrust_y, thrust_z]
-	
-	// prepare the changing vectors used by the two generated OSQP problems
-
-	if (!_matrix_consistent || _num_actuators != FA_NP) {
-		_actuator_sp = _prev_actuator_sp;
-		_last_valid_result = false;
+    if (!_matrix_consistent || _num_actuators != FA_NP) {
+        _actuator_sp = _prev_actuator_sp;
+        _last_valid_result = false;
         PX4_ERR("QP: Control allocation matrix inconsistent");
-		return;
-	}
+        return;
+    }
 
-	OSQPFloat control_des[FA_WRENCH_DIM] = {0};
-	OSQPFloat control_scaled[FA_WRENCH_DIM] = {0};
-	OSQPFloat control_achieved[FA_WRENCH_DIM] = {0};
-	OSQPFloat mu_projected[FA_NP] = {0};
-	OSQPFloat closest_q[FA_NP] = {0};
+    OSQPFloat control_des[FA_WRENCH_DIM] = {0};
+    OSQPFloat control_scaled[FA_WRENCH_DIM] = {0};
+    prepareControlSetpoints(control_des, control_scaled);
 
-	for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-		control_des[axis] = static_cast<OSQPFloat>(_control_sp(axis));
-		control_scaled[axis] = FA_SW[axis] * control_des[axis];
-	}
+    OSQPFloat mu_projected[FA_NP] = {0};
+    OSQPFloat closest_error = 0.0f;
+    
+    // solve the bounded closest-control projection
+    if (!solveClosestControl(control_des, mu_projected, closest_error)) {
+        _actuator_sp = _prev_actuator_sp;
+        _last_valid_result = false;
+        return;
+    }
 
-	/* =====================================================================
-	 * Bounded closest-control projection
-	 *
-	 * Problem:
-	 *       minimize 0.5 ||Sw(C mu - c_des)||_2^2
-	 *   subject to
-	 *       mu_min <= mu <= mu_max
-	 *
-	 * Runtime update:
-	 *       q = -C' Sw' Sw c_des
-	 *
-	 * Outputs:
-	 *   bounded projected allocation and scaled projection error.
-	 * ===================================================================== */
+    bool feasible = (closest_error <= FA_FEASIBILITY_TOL);
+    OSQPFloat saturation_margin = std::numeric_limits<OSQPFloat>::quiet_NaN();
+    OSQPFloat margin_error = 0.0f;
 
-    bool wrench_is_corrupted = false;
+    // if feasible and we have redundant actuators, optimize saturation margin
+    if (feasible && NUM_ACTUATORS > 6) {
+        solveMarginControl(control_des, control_scaled, mu_projected, margin_error, saturation_margin);
+    }
+
+    // final safety checks and output mapping
+    if (!verifyActuatorBounds()) {
+        _actuator_sp = _prev_actuator_sp;
+        _last_valid_result = false;
+        return;
+    }
+
+    mapToNormalizedOutputs();
+
+    _last_valid_result = true;
+    _last_feasible = feasible;
+    _last_closest_error = static_cast<float>(closest_error);
+    _last_margin_error = static_cast<float>(margin_error);
+    _last_saturation_margin = static_cast<float>(saturation_margin);
+}
+
+void ControlAllocationQP::prepareControlSetpoints(OSQPFloat control_des[FA_WRENCH_DIM], OSQPFloat control_scaled[FA_WRENCH_DIM])
+{
     for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
+        control_des[axis] = static_cast<OSQPFloat>(_control_sp(axis));
+        
         if (!PX4_ISFINITE(control_des[axis])) {
-            wrench_is_corrupted = true;
+            control_des[axis] = 0.0f; 
             PX4_ERR("QP: control_des[%d] is NaN", axis);
         }
+        
+        control_scaled[axis] = FA_SW[axis] * control_des[axis];
     }
+}
 
-    if (wrench_is_corrupted) {
-        // zero out the NaN demands 
+bool ControlAllocationQP::solveClosestControl(const OSQPFloat control_des[FA_WRENCH_DIM], OSQPFloat mu_projected[FA_NP], OSQPFloat& closest_error)
+{
+    OSQPFloat closest_q[FA_NP] = {0};
+
+    // q = -C' Sw' Sw c_des
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-            control_des[axis] = 0.0f; 
+            closest_q[actuator] -= FA_C[axis][actuator] * FA_SW[axis] * FA_SW[axis] * control_des[axis];
         }
     }
 
-	for (int actuator = 0; actuator < FA_NP; ++actuator) {
-		for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-			closest_q[actuator] -= FA_C[axis][actuator]
-						       * FA_SW[axis]
-						       * FA_SW[axis]
-						       * control_des[axis];
-		}
-	}
+    OSQPInt exitflag = osqp_update_data_vec(&fa_closest_solver, closest_q, nullptr, nullptr);
+    if (exitflag != 0) return false;
 
-	OSQPInt exitflag = osqp_update_data_vec(
-		&fa_closest_solver,
-		closest_q,
-		nullptr,
-		nullptr);
+    exitflag = osqp_solve(&fa_closest_solver);
 
-	if (exitflag != 0) {
-		_actuator_sp = _prev_actuator_sp;
-		_last_valid_result = false;
-		return;
-	}
+    if (exitflag != 0 || (fa_closest_solver.info->status_val != OSQP_SOLVED && fa_closest_solver.info->status_val != OSQP_SOLVED_INACCURATE)) {
+        PX4_ERR("QP: Closest projection failed. OSQP error: %d", fa_closest_solver.info->status_val);
+        return false;
+    }
 
-	exitflag = osqp_solve(&fa_closest_solver);
+    OSQPFloat control_achieved[FA_WRENCH_DIM] = {0};
+    OSQPFloat scaled_error_squared = 0.0f;
 
-	if (exitflag != 0
-	    || (fa_closest_solver.info->status_val != OSQP_SOLVED
-		&& fa_closest_solver.info->status_val != OSQP_SOLVED_INACCURATE)) {
-		_actuator_sp = _prev_actuator_sp;
-		_last_valid_result = false;
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        mu_projected[actuator] = fa_closest_solver.solution->x[actuator];
+        _actuator_sp(actuator) = static_cast<float>(mu_projected[actuator]);
+    }
 
-        // logs
-        PX4_ERR("QP: Optimization was unable to be solved. OSQP error: %d", fa_closest_solver.info->status_val);
+    for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
+        for (int actuator = 0; actuator < FA_NP; ++actuator) {
+            control_achieved[axis] += FA_C[axis][actuator] * mu_projected[actuator];
+        }
+        const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
+        scaled_error_squared += error * error;
+    }
 
-        PX4_INFO("  Iters: %d | Time: %.2f ms | Obj: %.4f (Gap: %.4f)",
-                static_cast<int>(fa_closest_solver.info->iter),
-                static_cast<double>(fa_closest_solver.info->solve_time * 1000.0f), // Convert seconds to ms
-                static_cast<double>(fa_closest_solver.info->obj_val),
-                static_cast<double>(fa_closest_solver.info->duality_gap));
-                
-        PX4_INFO("  Residuals: Primal=%.6f, Dual=%.6f | KKT Err: %.6f",
-                static_cast<double>(fa_closest_solver.info->prim_res),
-                static_cast<double>(fa_closest_solver.info->dual_res),
-                static_cast<double>(fa_closest_solver.info->rel_kkt_error));
-                
-        PX4_INFO("  Rho: Estimate=%.4f, Updates=%d",
-                static_cast<double>(fa_closest_solver.info->rho_estimate),
-                static_cast<int>(fa_closest_solver.info->rho_updates));
-		return;
-	}
+    closest_error = sqrtf(scaled_error_squared);
+    return true;
+}
 
-	for (int actuator = 0; actuator < FA_NP; ++actuator) {
-		mu_projected[actuator] = fa_closest_solver.solution->x[actuator];
-		_actuator_sp(actuator) = static_cast<float>(mu_projected[actuator]);
-	}
+bool ControlAllocationQP::solveMarginControl(
+    const OSQPFloat control_des[FA_WRENCH_DIM], 
+    const OSQPFloat control_scaled[FA_WRENCH_DIM], 
+    const OSQPFloat mu_projected[FA_NP], 
+    OSQPFloat& margin_error, 
+    OSQPFloat& saturation_margin)
+{
+    OSQPFloat margin_l[FA_MARGIN_CONSTRAINTS] = {0};
+    OSQPFloat margin_u[FA_MARGIN_CONSTRAINTS] = {0};
 
-	OSQPFloat scaled_error_squared = 0.0f;
+    for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
+        margin_l[axis] = control_scaled[axis];
+        margin_u[axis] = control_scaled[axis];
+    }
 
-	for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-		for (int actuator = 0; actuator < FA_NP; ++actuator) {
-			control_achieved[axis] += FA_C[axis][actuator] * mu_projected[actuator];
-		}
-
-		const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
-		scaled_error_squared += error * error;
-	}
-
-	OSQPFloat scaled_error = sqrtf(scaled_error_squared);
-	bool feasible = scaled_error <= FA_FEASIBILITY_TOL;
-	OSQPFloat saturation_margin = std::numeric_limits<OSQPFloat>::quiet_NaN();
-
-    PX4_INFO("scaled_error = %.4f", static_cast<double>(scaled_error));
-
-	/* =====================================================================
-	 * Feasible request -> Max satuaration margin allocation
-	 *
-	 * Problem:
-	 *       maximize m
-	 *   subject to
-	 *       Sw C mu = Sw c_des
-	 *       mu_i >= mu_min_i + m(mu_max_i - mu_min_i)
-	 *       mu_i <= mu_max_i - m(mu_max_i - mu_min_i)
-	 *       0 <= m <= 0.5
-	 *
-	 * Output:
-	 *   	exact max-min-margin allocation when the margin solve succeeds.
-	 * ===================================================================== */
-
-
-	// entered only when the projected control error is within the configured
-	// numerical membership tolerance.
-	if (feasible) {
-		OSQPFloat margin_l[FA_MARGIN_CONSTRAINTS] = {0};
-		OSQPFloat margin_u[FA_MARGIN_CONSTRAINTS] = {0};
-
-		for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-			margin_l[axis] = control_scaled[axis];
-			margin_u[axis] = control_scaled[axis];
-		}
-
-		for (int actuator = 0; actuator < FA_NP; ++actuator) {
-			margin_l[FA_WRENCH_DIM + actuator] = -OSQP_INFTY;
-			margin_u[FA_WRENCH_DIM + actuator] = -FA_MU_MIN[actuator];
-		}
-
-		for (int actuator = 0; actuator < FA_NP; ++actuator) {
-			margin_l[FA_WRENCH_DIM + FA_NP + actuator] = -OSQP_INFTY;
-			margin_u[FA_WRENCH_DIM + FA_NP + actuator] = FA_MU_MAX[actuator];
-		}
-
-		margin_l[FA_MARGIN_CONSTRAINTS - 1] = 0.0f;
-		margin_u[FA_MARGIN_CONSTRAINTS - 1] = 0.5f;
-
-		exitflag = osqp_update_data_vec(
-			&fa_margin_solver,
-			nullptr,
-			margin_l,
-			margin_u);
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        margin_l[FA_WRENCH_DIM + actuator] = -OSQP_INFTY;
+        margin_u[FA_WRENCH_DIM + actuator] = -FA_MU_MIN[actuator];
         
-		if (exitflag == 0) {
-			exitflag = osqp_solve(&fa_margin_solver);
-		}
+        margin_l[FA_WRENCH_DIM + FA_NP + actuator] = -OSQP_INFTY;
+        margin_u[FA_WRENCH_DIM + FA_NP + actuator] = FA_MU_MAX[actuator];
+    }
 
-		if (exitflag == 0
-		    && (fa_margin_solver.info->status_val == OSQP_SOLVED
-			|| fa_margin_solver.info->status_val == OSQP_SOLVED_INACCURATE)) {
-            OSQPFloat margin_error_squared = 0.0f;
+    margin_l[FA_MARGIN_CONSTRAINTS - 1] = 0.0f;
+    margin_u[FA_MARGIN_CONSTRAINTS - 1] = 0.5f;
 
-			for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-				control_achieved[axis] = 0.0f;
-			}
+    if (osqp_update_data_vec(&fa_margin_solver, nullptr, margin_l, margin_u) != 0) return false;
+    if (osqp_solve(&fa_margin_solver) != 0) return false;
 
-			for (int actuator = 0; actuator < FA_NP; ++actuator) {
-				_actuator_sp(actuator) = static_cast<float>(fa_margin_solver.solution->x[actuator]);
-			}
+    if (fa_margin_solver.info->status_val == OSQP_SOLVED || fa_margin_solver.info->status_val == OSQP_SOLVED_INACCURATE) {
+        OSQPFloat control_achieved[FA_WRENCH_DIM] = {0};
+        OSQPFloat margin_error_squared = 0.0f;
 
-			for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-				for (int actuator = 0; actuator < FA_NP; ++actuator) {
-					control_achieved[axis] += FA_C[axis][actuator] * _actuator_sp(actuator);
-				}
+        for (int actuator = 0; actuator < FA_NP; ++actuator) {
+            _actuator_sp(actuator) = static_cast<float>(fa_margin_solver.solution->x[actuator]);
+        }
 
-				const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
-				margin_error_squared += error * error;
-			}
+        for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
+            for (int actuator = 0; actuator < FA_NP; ++actuator) {
+                control_achieved[axis] += FA_C[axis][actuator] * _actuator_sp(actuator);
+            }
+            const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
+            margin_error_squared += error * error;
+        }
 
-			const OSQPFloat margin_error = sqrtf(margin_error_squared);
+        margin_error = sqrtf(margin_error_squared);
 
-			if (margin_error <= FA_FEASIBILITY_TOL) {
-				scaled_error = margin_error;
-				saturation_margin = fa_margin_solver.solution->x[FA_NP];
+        if (margin_error <= FA_FEASIBILITY_TOL) {
+            saturation_margin = fa_margin_solver.solution->x[FA_NP];
+            return true;
+        }
+    }
 
-			} else {
-				for (int actuator = 0; actuator < FA_NP; ++actuator) {
-					_actuator_sp(actuator) = static_cast<float>(mu_projected[actuator]);
-				}
-			}
-		}
-	}
+    // If margin solve failed or error is too high, revert to closest projection
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        _actuator_sp(actuator) = static_cast<float>(mu_projected[actuator]);
+    }
+    return false;
+}
 
-    // final numerical checks
-	bool bounds_valid = true;
+bool ControlAllocationQP::verifyActuatorBounds()
+{
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        if (_actuator_sp(actuator) < FA_MU_MIN[actuator] - FA_FEASIBILITY_TOL || 
+            _actuator_sp(actuator) > FA_MU_MAX[actuator] + FA_FEASIBILITY_TOL) {
+            
+            PX4_ERR("QP: Actuator %d bounds outside of tolerance range (Value: %.6f)", 
+                    actuator, static_cast<double>(_actuator_sp(actuator)));
+            return false;
+        }
+    }
+    return true;
+}
 
-	for (int actuator = 0; actuator < FA_NP; ++actuator) {
-		if (_actuator_sp(actuator) < FA_MU_MIN[actuator] - FA_FEASIBILITY_TOL
-		    || _actuator_sp(actuator) > FA_MU_MAX[actuator] + FA_FEASIBILITY_TOL) {
-			bounds_valid = false;
-		}
-	}
+void ControlAllocationQP::mapToNormalizedOutputs()
+{
+    for (int actuator = 0; actuator < FA_NP; ++actuator) {
+        float force_n = std::max(0.0f, _actuator_sp(actuator));
+        float max_thrust_n = FA_MU_MAX[actuator];
 
-	if (!bounds_valid) {
-		_actuator_sp = _prev_actuator_sp;
-		_last_valid_result = false;
-		return;
-	}
-
-	_last_valid_result = true;
-	_last_feasible = feasible;
-	_last_scaled_error = static_cast<float>(scaled_error);
-	_last_saturation_margin = static_cast<float>(saturation_margin);
+        if (max_thrust_n > 0.001f) {
+            // apply inverse quadratic thrust model: u = sqrt(F_desired / F_max)
+            float normalized_output = std::sqrt(force_n / max_thrust_n);
+            
+            // hard clamp to strictly [0.0, 1.0]
+            _actuator_sp(actuator) = std::max(0.0f, std::min(normalized_output, 1.0f));
+        } else {
+            _actuator_sp(actuator) = 0.0f;
+        }
+    }
 }
