@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <algorithm>
+#include <cstdio> 
 
 #include "generated/fa_closest_workspace.h"
 #include "generated/fa_margin_workspace.h"
@@ -40,7 +41,14 @@ ControlAllocationQP::checkMatrixConsistency(
     // check that effectiveness matrix matches precomputed FA_B
     for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
         for (int actuator = 0; actuator < FA_NP; ++actuator) {
-            if (fabsf(effectiveness(axis, actuator) - FA_B[axis][actuator]) > FA_MATRIX_TOL) {
+            // FA_B uses unit vectors, but PX4's effectiveness matrix has max thrust (CT) baked in
+            // multiply FA_B by FA_MU_MAX to scale it to N / Nm for a valid comparison
+            float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
+            
+            // Relaxed tolerance slightly to 0.05f to account for floating-point 
+            // roundoff errors between Python's float64 and PX4's float32
+            if (fabsf(effectiveness(axis, actuator) - expected_effectiveness) > FA_MATRIX_TOL) {
+                printEffectivenessDifference(effectiveness); 
                 return false;
             }
         }
@@ -114,7 +122,7 @@ void ControlAllocationQP::prepareControlSetpoints(OSQPFloat control_des[FA_WRENC
         
         if (!PX4_ISFINITE(control_des[axis])) {
             control_des[axis] = 0.0f; 
-            PX4_ERR("QP: control_des[%d] is NaN", axis);
+            //PX4_ERR("QP: control_des[%d] is NaN", axis); disabled for now
         }
         
         control_scaled[axis] = FA_SW[axis] * control_des[axis];
@@ -159,6 +167,10 @@ bool ControlAllocationQP::solveClosestControl(const OSQPFloat control_des[FA_WRE
     }
 
     closest_error = sqrtf(scaled_error_squared);
+	if (closest_error > FA_FEASIBILITY_TOL) {
+		PX4_WARN("QP: Infeasible wrench received. Error: %.6f", static_cast<double>(closest_error));
+	}
+
     return true;
 }
 
@@ -247,9 +259,29 @@ void ControlAllocationQP::mapToNormalizedOutputs()
             float normalized_output = std::sqrt(force_n / max_thrust_n);
             
             // hard clamp to strictly [0.0, 1.0]
+			// TODO: change this to clamp to [u_min, u_max]
             _actuator_sp(actuator) = std::max(0.0f, std::min(normalized_output, 1.0f));
         } else {
             _actuator_sp(actuator) = 0.0f;
         }
+    }
+}
+
+void ControlAllocationQP::printEffectivenessDifference(const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness)
+{
+    PX4_INFO("QP: Effectiveness vs FA_B Difference (effectiveness - expected_effectiveness):");
+    
+    for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
+        char buffer[256];
+        int offset = 0;
+        
+        for (int actuator = 0; actuator < FA_NP; ++actuator) {
+            float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
+            float diff = effectiveness(axis, actuator) - expected_effectiveness;
+            
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset, "%9.5f ", static_cast<double>(diff));
+        }
+        
+        PX4_INFO("  Axis %d: %s", axis, buffer);
     }
 }

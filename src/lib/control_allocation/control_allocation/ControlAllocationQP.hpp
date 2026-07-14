@@ -67,6 +67,9 @@ private:
     // convert optimal physical forces into normalized [0, 1] signals for the flight controller
     void mapToNormalizedOutputs();
 
+    // prints difference between generated effectiveness matrix and PX4-computed one
+    void printEffectivenessDifference(const matrix::Matrix<float, NUM_AXES, NUM_ACTUATORS> &effectiveness);
+
 	bool _matrix_consistent{false};
 	bool _last_feasible{false};
 	bool _last_valid_result{false};
