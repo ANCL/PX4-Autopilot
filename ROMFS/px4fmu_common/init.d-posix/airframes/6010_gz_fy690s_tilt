@@ -63,7 +63,7 @@ param set-default CA_ROTOR3_CT 17.6580
 # ROTOR 4 (Base Angle: 270.0°, CCW)
 # Offsets -> Alpha: 25.0°, Beta: 0.0°, Gamma: 0.0°
 # ==========================================
-param set-default CA_ROTOR4_PX 0.0000 
+param set-default CA_ROTOR4_PX 0.0000
 param set-default CA_ROTOR4_PY 0.3600
 param set-default CA_ROTOR4_PZ -0.0440
 param set-default CA_ROTOR4_AX 0.4226
