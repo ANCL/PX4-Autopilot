@@ -2,7 +2,7 @@
 #
 # @name Gazebo f450 quadcopter
 #
-# @type Hexarotor
+# @type Quadrotor
 #
 
 . ${R}etc/init.d/rc.mc_defaults
