@@ -44,9 +44,6 @@ ControlAllocationQP::checkMatrixConsistency(
             // FA_B uses unit vectors, but PX4's effectiveness matrix has max thrust (CT) baked in
             // multiply FA_B by FA_MU_MAX to scale it to N / Nm for a valid comparison
             float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
-            
-            // Relaxed tolerance slightly to 0.05f to account for floating-point 
-            // roundoff errors between Python's float64 and PX4's float32
             if (fabsf(effectiveness(axis, actuator) - expected_effectiveness) > FA_MATRIX_TOL) {
                 printEffectivenessDifference(effectiveness); 
                 return false;
@@ -227,7 +224,7 @@ bool ControlAllocationQP::solveMarginControl(
         }
     }
 
-    // If margin solve failed or error is too high, revert to closest projection
+    // if margin solve failed or error is too high, revert to closest projection
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
         _actuator_sp(actuator) = static_cast<float>(mu_projected[actuator]);
     }
