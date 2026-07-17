@@ -14,15 +14,17 @@ using namespace matrix;
 class ControlAllocationQPTest : public ::testing::Test {
 protected:
     using ActuatorVector = ControlAllocation::ActuatorVector;
-
-    ControlAllocationQP allocator;
-    ActuatorVector trim;
-    ActuatorVector linearization_point;
     
     void SetUp() override {
         // initialize standard trim and linearization vectors to zero
         trim.setZero();
         linearization_point.setZero();
+    }
+
+    void TearDown() override {
+        // prevent OSQP state leakage between tests
+        osqp_cold_start(&fa_closest_solver);
+        osqp_cold_start(&fa_margin_solver);
     }
 
     // helper function to build a perfect effectiveness matrix matching the python generator
@@ -33,15 +35,20 @@ protected:
 
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
             for (int actuator = 0; actuator < FA_NP; ++actuator) {
-                effectiveness(axis, actuator) = static_cast<float>(FA_B[axis][actuator]);
+                effectiveness(axis, actuator) = static_cast<float>(FA_B[axis][actuator] * FA_MU_MAX[actuator]);
             }
         }
         
         return effectiveness;
     }
 
+    ControlAllocationQP allocator;
+    ActuatorVector trim;
+    ActuatorVector linearization_point;
+
     // set of verticies from the zero-moment FWS in N
-    Vector3f zero_moment_force_set[8] = {
+    // these assume z_offset = 0, alphas = 25, -25 ..., betas = 0, ell = 0.360, CT = 17.658 
+    const Vector3f zero_moment_force_set[8] = {
         Vector3f(  0.0000f,   0.0000f,   0.0000f),
         Vector3f( -7.4626f, -12.9256f, -32.0072f),
         Vector3f( 14.9252f,   0.0000f, -32.0072f),
@@ -52,15 +59,8 @@ protected:
         Vector3f(  0.0000f,   0.0000f, -96.0215f)
     };
 
-
-    void TearDown() override {
-        // prevent OSQP state leakage between tests
-        osqp_cold_start(&fa_closest_solver);
-        osqp_cold_start(&fa_margin_solver);
-    }
+    const float weights[FA_WRENCH_DIM] = {10.0f, 10.0f, 10.0f, 0.0f, 0.0f, 3.0f};
 };
-
-
 
 // ==============================================================================
 // Test 1: Matrix Consistency - Perfect Match
@@ -321,6 +321,24 @@ TEST_F(ControlAllocationQPTest, CoupledWrenchPrioritization) {
                 << "Solver failed to apply significant Roll torque under saturation at point " << i;
         }
     }
+}
+
+TEST_F(ControlAllocationQPTest, ErrorValidation) {
+    auto effectiveness = createPerfectEffectivenessMatrix();
+    allocator.setEffectivenessMatrix(effectiveness, trim, linearization_point, FA_NP, false);
+    // zero torque, only z-thrust
+    const float wrench[] = {3.0f, 0.0f, 0.0f, 0.0f, 0.0f, 2000.000f};
+
+    allocator.setControlSetpoint(Vector<float, FA_WRENCH_DIM>(wrench));
+    allocator.allocate();
+
+    EXPECT_TRUE(allocator.isLastResultValid()) 
+            << "Solver failed to find a valid fallback solution for test point ";
+    
+    float unweighted_err = allocator.getLastClosestError() / weights[FA_WRENCH_DIM - 1] - wrench[5];
+
+    EXPECT_LT(unweighted_err, FA_FEASIBILITY_TOL)
+            << "Weighted error incorrect";
 }
 
 extern "C" {

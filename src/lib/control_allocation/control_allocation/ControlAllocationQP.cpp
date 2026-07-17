@@ -45,6 +45,7 @@ ControlAllocationQP::checkMatrixConsistency(
             // multiply FA_B by FA_MU_MAX to scale it to N / Nm for a valid comparison
             float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
             if (fabsf(effectiveness(axis, actuator) - expected_effectiveness) > FA_MATRIX_TOL) {
+                PX4_ERR("QP: Control allocation matrix inconsistent");
                 printEffectivenessDifference(effectiveness); 
                 return false;
             }
@@ -54,6 +55,7 @@ ControlAllocationQP::checkMatrixConsistency(
     // check trims & tolerances match
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
         if (fabsf(actuator_trim(actuator)) > FA_MATRIX_TOL || fabsf(linearization_point(actuator)) > FA_MATRIX_TOL) {
+            PX4_ERR("QP: Actuator trims inconsistent");
             return false;
         }
     }
@@ -68,8 +70,7 @@ ControlAllocationQP::allocate()
 
     if (!_matrix_consistent || _num_actuators != FA_NP) {
         _actuator_sp = _prev_actuator_sp;
-        _last_valid_result = false;
-        PX4_ERR("QP: Control allocation matrix inconsistent");
+        _last_valid_result = false; 
         return;
     }
 
@@ -92,7 +93,7 @@ ControlAllocationQP::allocate()
     OSQPFloat margin_error = 0.0f;
 
     // if feasible and we have redundant actuators, optimize saturation margin
-    if (feasible && NUM_ACTUATORS > 6) {
+    if (feasible && FA_NP > 6) {
         solveMarginControl(control_des, control_scaled, mu_projected, margin_error, saturation_margin);
     }
 
@@ -119,7 +120,6 @@ void ControlAllocationQP::prepareControlSetpoints(OSQPFloat control_des[FA_WRENC
         
         if (!PX4_ISFINITE(control_des[axis])) {
             control_des[axis] = 0.0f; 
-            //PX4_ERR("QP: control_des[%d] is NaN", axis); disabled for now
         }
         
         control_scaled[axis] = FA_SW[axis] * control_des[axis];
@@ -130,10 +130,10 @@ bool ControlAllocationQP::solveClosestControl(const OSQPFloat control_des[FA_WRE
 {
     OSQPFloat closest_q[FA_NP] = {0};
 
-    // q = -C' Sw' Sw c_des
+    // q = -B' Sw' Sw c_des
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-            closest_q[actuator] -= FA_C[axis][actuator] * FA_SW[axis] * FA_SW[axis] * control_des[axis];
+            closest_q[actuator] -= FA_B[axis][actuator] * FA_SW[axis] * FA_SW[axis] * control_des[axis];
         }
     }
 
@@ -157,17 +157,18 @@ bool ControlAllocationQP::solveClosestControl(const OSQPFloat control_des[FA_WRE
 
     for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
         for (int actuator = 0; actuator < FA_NP; ++actuator) {
-            control_achieved[axis] += FA_C[axis][actuator] * mu_projected[actuator];
+            control_achieved[axis] += FA_B[axis][actuator] * mu_projected[actuator];
         }
         const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
         scaled_error_squared += error * error;
     }
 
     closest_error = sqrtf(scaled_error_squared);
+    /* for debugging
 	if (closest_error > FA_FEASIBILITY_TOL) {
 		PX4_WARN("QP: Infeasible wrench received. Error: %.6f", static_cast<double>(closest_error));
 	}
-
+    */
     return true;
 }
 
@@ -210,7 +211,7 @@ bool ControlAllocationQP::solveMarginControl(
 
         for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
             for (int actuator = 0; actuator < FA_NP; ++actuator) {
-                control_achieved[axis] += FA_C[axis][actuator] * _actuator_sp(actuator);
+                control_achieved[axis] += FA_B[axis][actuator] * _actuator_sp(actuator);
             }
             const OSQPFloat error = FA_SW[axis] * (control_achieved[axis] - control_des[axis]);
             margin_error_squared += error * error;
@@ -236,9 +237,10 @@ bool ControlAllocationQP::verifyActuatorBounds()
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
         if (_actuator_sp(actuator) < FA_MU_MIN[actuator] - FA_FEASIBILITY_TOL || 
             _actuator_sp(actuator) > FA_MU_MAX[actuator] + FA_FEASIBILITY_TOL) {
-            
+            /* for debugging
             PX4_ERR("QP: Actuator %d bounds outside of tolerance range (Value: %.6f)", 
                     actuator, static_cast<double>(_actuator_sp(actuator)));
+            */
             return false;
         }
     }

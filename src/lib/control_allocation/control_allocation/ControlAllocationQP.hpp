@@ -74,7 +74,7 @@ private:
 	bool _last_feasible{false};
 	bool _last_valid_result{false};
 	float _last_saturation_margin{0.f};
-    // last scaled error from the closest point solver
+    // last scaled weighted error from the closest point solver
 	float _last_closest_error{0.f};
     // last scaled error from the margin solver
     float _last_margin_error{0.f};
