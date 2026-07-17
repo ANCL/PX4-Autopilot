@@ -55,7 +55,6 @@ px4_add_library(ControlAllocation
 	generated/src/scaling.c
 	generated/src/util.c
 	generated/src/vector.c
-	#control_allocation_qp_params.c
 )
 
 # Relax compiler flags for generated and OSQP C files
