@@ -9,14 +9,8 @@ set VEHICLE_TYPE mc
 
 param set-default CA_ROTOR_COUNT 6
 param set-default MAV_TYPE 13 # Hexarotor
-<<<<<<< HEAD
 param set-default CA_AIRFRAME 16 # Fixed-tilt Hex
 param set-default CA_METHOD 3 # Quadratic Programming
-=======
-param set-default CA_AIRFRAME 9 # Custom Airframe
-param set-default CA_METHOD 0 # Pseudo-inverse
->>>>>>> origin/sbonsaint/modular_tilt_angles
-
 
 if param compare IMU_GYRO_RATEMAX 400
 then
