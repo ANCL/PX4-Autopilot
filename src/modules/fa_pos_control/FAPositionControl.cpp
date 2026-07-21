@@ -115,7 +115,7 @@ bool FAPositionControl::update(const float dt)
     Vector3f acc_sp(trajectory_sp.acceleration);
     
     // clean up incoming setpoints
-    //sanitize_vector(vel_sp);
+    sanitize_vector(vel_sp);
     sanitize_vector(acc_sp);
 
     float desired_yaw = PX4_ISFINITE(trajectory_sp.yaw) ? trajectory_sp.yaw : Eulerf(q).psi();

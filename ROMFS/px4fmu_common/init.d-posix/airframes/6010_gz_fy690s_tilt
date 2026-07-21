@@ -14,6 +14,7 @@ PX4_SIM_MODEL=${PX4_SIM_MODEL:=fy690s_tilt}
 param set-default CA_ROTOR0_PX 0.3118
 param set-default CA_ROTOR0_PY -0.1800
 param set-default CA_ROTOR0_PZ -0.0440
+#param set-default CA_ROTOR0_PZ 0.0
 param set-default CA_ROTOR0_AX -0.2113
 param set-default CA_ROTOR0_AY -0.3660
 param set-default CA_ROTOR0_AZ -0.9063
@@ -27,6 +28,7 @@ param set-default CA_ROTOR0_CT 17.6580
 param set-default CA_ROTOR1_PX 0.0000
 param set-default CA_ROTOR1_PY -0.3600
 param set-default CA_ROTOR1_PZ -0.0440
+#param set-default CA_ROTOR1_PZ 0.0
 param set-default CA_ROTOR1_AX 0.4226
 param set-default CA_ROTOR1_AY 0.0000
 param set-default CA_ROTOR1_AZ -0.9063
@@ -40,6 +42,7 @@ param set-default CA_ROTOR1_CT 17.6580
 param set-default CA_ROTOR2_PX -0.3118
 param set-default CA_ROTOR2_PY -0.1800
 param set-default CA_ROTOR2_PZ -0.0440
+#param set-default CA_ROTOR2_PZ 0.0
 param set-default CA_ROTOR2_AX -0.2113
 param set-default CA_ROTOR2_AY 0.3660
 param set-default CA_ROTOR2_AZ -0.9063
@@ -53,6 +56,7 @@ param set-default CA_ROTOR2_CT 17.6580
 param set-default CA_ROTOR3_PX -0.3118
 param set-default CA_ROTOR3_PY 0.1800
 param set-default CA_ROTOR3_PZ -0.0440
+#param set-default CA_ROTOR3_PZ 0.0
 param set-default CA_ROTOR3_AX -0.2113
 param set-default CA_ROTOR3_AY -0.3660
 param set-default CA_ROTOR3_AZ -0.9063
@@ -66,6 +70,7 @@ param set-default CA_ROTOR3_CT 17.6580
 param set-default CA_ROTOR4_PX 0.0000
 param set-default CA_ROTOR4_PY 0.3600
 param set-default CA_ROTOR4_PZ -0.0440
+#param set-default CA_ROTOR4_PZ 0.0
 param set-default CA_ROTOR4_AX 0.4226
 param set-default CA_ROTOR4_AY 0.0000
 param set-default CA_ROTOR4_AZ -0.9063
@@ -79,6 +84,7 @@ param set-default CA_ROTOR4_CT 17.6580
 param set-default CA_ROTOR5_PX 0.3118
 param set-default CA_ROTOR5_PY 0.1800
 param set-default CA_ROTOR5_PZ -0.0440
+#param set-default CA_ROTOR5_PZ 0.0
 param set-default CA_ROTOR5_AX -0.2113
 param set-default CA_ROTOR5_AY 0.3660
 param set-default CA_ROTOR5_AZ -0.9063
@@ -93,12 +99,12 @@ param set-default SIM_GZ_EC_FUNC4 104
 param set-default SIM_GZ_EC_FUNC5 105
 param set-default SIM_GZ_EC_FUNC6 106
 
-param set-default SIM_GZ_EC_MIN1 150
-param set-default SIM_GZ_EC_MIN2 150
-param set-default SIM_GZ_EC_MIN3 150
-param set-default SIM_GZ_EC_MIN4 150
-param set-default SIM_GZ_EC_MIN5 150
-param set-default SIM_GZ_EC_MIN6 150
+#param set-default SIM_GZ_EC_MIN1 45
+#param set-default SIM_GZ_EC_MIN2 45
+#param set-default SIM_GZ_EC_MIN3 45
+#param set-default SIM_GZ_EC_MIN4 45
+#param set-default SIM_GZ_EC_MIN5 45
+#param set-default SIM_GZ_EC_MIN6 45
 
 param set-default SIM_GZ_EC_MAX1 822.05
 param set-default SIM_GZ_EC_MAX2 822.05
@@ -106,5 +112,12 @@ param set-default SIM_GZ_EC_MAX3 822.05
 param set-default SIM_GZ_EC_MAX4 822.05
 param set-default SIM_GZ_EC_MAX5 822.05
 param set-default SIM_GZ_EC_MAX6 822.05
+
+param set-default FA_THR_MAX_X 1
+param set-default FA_THR_MAX_Y 1
+param set-default FA_THR_MAX_Z 1
+param set-default FA_TRQ_MAX_R 1
+param set-default FA_TRQ_MAX_P 1
+param set-default FA_TRQ_MAX_Y 1
 
 param set-default SYS_AUTOSTART 6010
