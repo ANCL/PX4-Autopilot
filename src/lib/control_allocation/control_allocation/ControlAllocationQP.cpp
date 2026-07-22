@@ -1,16 +1,12 @@
 #include "ControlAllocationQP.hpp"
 
-#include <cmath>
-#include <limits>
-#include <algorithm>
-#include <cstdio> 
+#include <px4_platform_common/defines.h>
+#include <px4_platform_common/log.h>
 
 #include "generated/fa_closest_workspace.h"
 #include "generated/fa_margin_workspace.h"
 #include "generated/fa_problem_data.h"
 #include "generated/inc/public/osqp.h"
-
-#include <px4_platform_common/log.h>
 
 void
 ControlAllocationQP::setEffectivenessMatrix(
@@ -44,7 +40,9 @@ ControlAllocationQP::checkMatrixConsistency(
             // FA_B uses unit vectors, but PX4's effectiveness matrix has max thrust (CT) baked in
             // multiply FA_B by FA_MU_MAX to scale it to N / Nm for a valid comparison
             float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
-            if (fabsf(effectiveness(axis, actuator) - expected_effectiveness) > FA_MATRIX_TOL) {
+            float diff = effectiveness(axis, actuator) - expected_effectiveness;
+            
+            if (diff < -FA_MATRIX_TOL || diff > FA_MATRIX_TOL) {
                 PX4_ERR("QP: Control allocation matrix inconsistent");
                 printEffectivenessDifference(effectiveness); 
                 return false;
@@ -54,7 +52,11 @@ ControlAllocationQP::checkMatrixConsistency(
 
     // check trims & tolerances match
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
-        if (fabsf(actuator_trim(actuator)) > FA_MATRIX_TOL || fabsf(linearization_point(actuator)) > FA_MATRIX_TOL) {
+        float trim = actuator_trim(actuator);
+        float lin = linearization_point(actuator);
+        
+        if (trim < -FA_MATRIX_TOL || trim > FA_MATRIX_TOL || 
+            lin < -FA_MATRIX_TOL || lin > FA_MATRIX_TOL) {
             PX4_ERR("QP: Actuator trims inconsistent");
             return false;
         }
@@ -89,7 +91,7 @@ ControlAllocationQP::allocate()
     }
 
     bool feasible = (closest_error <= FA_FEASIBILITY_TOL);
-    OSQPFloat saturation_margin = std::numeric_limits<OSQPFloat>::quiet_NaN();
+    OSQPFloat saturation_margin = 0.0f;
     OSQPFloat margin_error = 0.0f;
 
     // if feasible and we have redundant actuators, optimize saturation margin
@@ -163,11 +165,11 @@ bool ControlAllocationQP::solveClosestControl(const OSQPFloat control_des[FA_WRE
         scaled_error_squared += error * error;
     }
 
-    closest_error = sqrtf(scaled_error_squared);
+    closest_error = __builtin_sqrtf(scaled_error_squared);
     /* for debugging
-	if (closest_error > FA_FEASIBILITY_TOL) {
-		PX4_WARN("QP: Infeasible wrench received. Error: %.6f", static_cast<double>(closest_error));
-	}
+    if (closest_error > FA_FEASIBILITY_TOL) {
+        PX4_WARN("QP: Infeasible wrench received. Error: %.6f", static_cast<double>(closest_error));
+    }
     */
     return true;
 }
@@ -217,7 +219,7 @@ bool ControlAllocationQP::solveMarginControl(
             margin_error_squared += error * error;
         }
 
-        margin_error = sqrtf(margin_error_squared);
+        margin_error = __builtin_sqrtf(margin_error_squared);
 
         if (margin_error <= FA_FEASIBILITY_TOL) {
             saturation_margin = fa_margin_solver.solution->x[FA_NP];
@@ -250,16 +252,18 @@ bool ControlAllocationQP::verifyActuatorBounds()
 void ControlAllocationQP::mapToNormalizedOutputs()
 {
     for (int actuator = 0; actuator < FA_NP; ++actuator) {
-        float force_n = std::max(0.0f, _actuator_sp(actuator));
+        float sp = _actuator_sp(actuator);
+        float force_n = (sp > 0.0f) ? sp : 0.0f;
         float max_thrust_n = FA_MU_MAX[actuator];
 
         if (max_thrust_n > 0.001f) {
             // apply inverse quadratic thrust model: u = sqrt(F_desired / F_max)
-            float normalized_output = std::sqrt(force_n / max_thrust_n);
+            float normalized_output = __builtin_sqrtf(force_n / max_thrust_n);
             
             // hard clamp to strictly [0.0, 1.0]
-			// TODO: change this to clamp to [u_min, u_max]
-            _actuator_sp(actuator) = std::max(0.0f, std::min(normalized_output, 1.0f));
+            // TODO: change this to clamp to [u_min, u_max]
+            float clamped_high = (normalized_output < 1.0f) ? normalized_output : 1.0f;
+            _actuator_sp(actuator) = (clamped_high > 0.0f) ? clamped_high : 0.0f;
         } else {
             _actuator_sp(actuator) = 0.0f;
         }
@@ -271,16 +275,13 @@ void ControlAllocationQP::printEffectivenessDifference(const matrix::Matrix<floa
     PX4_INFO("QP: Effectiveness vs FA_B Difference (effectiveness - expected_effectiveness):");
     
     for (int axis = 0; axis < FA_WRENCH_DIM; ++axis) {
-        char buffer[256];
-        int offset = 0;
-        
         for (int actuator = 0; actuator < FA_NP; ++actuator) {
             float expected_effectiveness = FA_B[axis][actuator] * FA_MU_MAX[actuator];
             float diff = effectiveness(axis, actuator) - expected_effectiveness;
             
-            offset += snprintf(buffer + offset, sizeof(buffer) - offset, "%9.5f ", static_cast<double>(diff));
+            if (diff < -FA_MATRIX_TOL || diff > FA_MATRIX_TOL) {
+                PX4_INFO("  Axis %d, Actuator %d Diff: %9.5f", axis, actuator, static_cast<double>(diff));
+            }
         }
-        
-        PX4_INFO("  Axis %d: %s", axis, buffer);
     }
 }
