@@ -1,7 +1,10 @@
 #!/bin/sh
-
+#
+# @name Gazebo fy690s_tilt_rokubi
+#
+# @type Hexarotor
+#
 . ${R}etc/init.d/rc.fa_defaults
-
 PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
 PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
 PX4_SIM_MODEL=${PX4_SIM_MODEL:=fy690s_tilt_rokubi}
@@ -115,4 +118,4 @@ param set-default SIM_GZ_EC_MAX4 822.05
 param set-default SIM_GZ_EC_MAX5 822.05
 param set-default SIM_GZ_EC_MAX6 822.05
 
-param set-default SYS_AUTOSTART 6010
+param set-default SYS_AUTOSTART 6005

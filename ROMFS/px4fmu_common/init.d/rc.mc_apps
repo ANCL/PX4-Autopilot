@@ -21,7 +21,7 @@ flight_mode_manager start
 #
 land_detector start multicopter
 
-if param compare SYS_AUTOSTART 6010 || param compare SYS_AUTOSTART 6002
+if param compare SYS_AUTOSTART 6004 || param compare SYS_AUTOSTART 6005
 then
     #
     # Start Fully-Actuated Position Controller

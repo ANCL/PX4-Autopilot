@@ -212,6 +212,9 @@ void FlightModeManager::start_flight_task()
 		case 0:
 			error = switchTask(FlightTaskIndex::ManualPosition);
 			break;
+		case 5: 
+			error = switchTask(FlightTaskIndex::FAPosition);
+			break;
 		case 4:
 		default:
 			if (_param_mpc_pos_mode.get() != 4) {

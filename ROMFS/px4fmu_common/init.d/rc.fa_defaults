@@ -12,6 +12,7 @@ param set-default MAV_TYPE 13 # Hexarotor
 param set-default CA_AIRFRAME 9 # Custom Airframe
 param set-default CA_METHOD 0 # Pseudo-inverse
 
+param set-default MPC_POS_MODE 5
 
 if param compare IMU_GYRO_RATEMAX 400
 then
