@@ -4,9 +4,7 @@
 #
 # @type Hexarotor
 #
-
 . ${R}etc/init.d/rc.mc_defaults
-
 PX4_SIMULATOR=${PX4_SIMULATOR:=gz}
 PX4_GZ_WORLD=${PX4_GZ_WORLD:=default}
 PX4_SIM_MODEL=${PX4_SIM_MODEL:=fy690s}
@@ -70,4 +68,4 @@ param set-default SIM_GZ_EC_MAX4 1000
 param set-default SIM_GZ_EC_MAX5 1000
 param set-default SIM_GZ_EC_MAX6 1000
 
-param set-default SYS_AUTOSTART 6001
+param set-default SYS_AUTOSTART 6003
