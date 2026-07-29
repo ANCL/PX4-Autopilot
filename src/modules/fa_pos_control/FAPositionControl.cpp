@@ -157,8 +157,6 @@ bool FAPositionControl::update(const float dt)
         for (int i = 0; i < 3; i++) {
             _e_p_int(i) = math::constrain(_e_p_int(i), -_int_limit, _int_limit);
             _e_R_int(i) = math::constrain(_e_R_int(i), -_int_limit_r, _int_limit_r);
-
-            PX4_INFO("_e_R_int(%d) = %.6f", i, static_cast<double>(_e_R_int(i)));
         }
     } else {
         // reset the integrator when on the ground to prevent takeoff spikes
