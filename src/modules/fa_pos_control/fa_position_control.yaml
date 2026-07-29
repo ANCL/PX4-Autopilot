@@ -31,6 +31,26 @@ parameters:
         description: Velocity P gain Z
         type: float
         default: 4.0
+      FA_I_X:
+        description: Position I gain X
+        type: float
+        default: 0.0
+      FA_I_Y:
+        description: Position I gain Y
+        type: float
+        default: 0.0
+      FA_I_Z:
+        description: Position I gain Z
+        type: float
+        default: 0.0
+      FA_INT_LIM:
+        description: Position Integral anti-windup limit
+        type: float
+        default: 2.0
+      FA_INT_LIM_R:
+        description: Attitude Integral anti-windup limit
+        type: float
+        default: 0.2
       FA_R_R:
         description: Attitude P gain Roll
         type: float
@@ -55,6 +75,18 @@ parameters:
         description: Angular Rate P gain Yaw
         type: float
         default: 1.0
+      FA_I_R_R:
+        description: Attitude I gain Roll
+        type: float
+        default: 0.0
+      FA_I_R_P:
+        description: Attitude I gain Pitch
+        type: float
+        default: 0.0
+      FA_I_R_Y:
+        description: Attitude I gain Yaw
+        type: float
+        default: 0.0
       FA_THR_MAX_X:
         description: Maximum Thrust X
         type: float

@@ -71,14 +71,16 @@ private:
     // Limits
     matrix::Vector3f _thrust_maximums;
     matrix::Vector3f _torque_maximums;
-    float _int_limit{1.0f}; // Maximum allowed value for the integral state
-
+    float _int_limit;               // maximum allowed value for the integral state
+    float _int_limit_r;             // anti-windup limit for attitude
+    
     // Gains
-    matrix::Vector3f _k_p;
-    matrix::Vector3f _k_v;
-    matrix::Vector3f _k_r;
-    matrix::Vector3f _k_w;
-    matrix::Vector3f _k_i;
+    matrix::Vector3f _k_p;          // position P gain
+    matrix::Vector3f _k_v;          // position D gain
+    matrix::Vector3f _k_i;          // position I gain
+    matrix::Vector3f _k_r;          // attitude P gain
+    matrix::Vector3f _k_w;          // attitude D gain
+    matrix::Vector3f _k_i_r;        // attitude I gain
     
     // Errors
     matrix::Vector3f _e_p;          // position error
@@ -86,6 +88,7 @@ private:
     matrix::Vector3f _e_R;          // rotational error
     matrix::Vector3f _e_w;          // angular vel error
     matrix::Vector3f _e_p_int{};    // accumulated position error
+    matrix::Vector3f _e_R_int{};    // attitude error accumulator
 
     // Setpoints
     matrix::Vector3f _vehicle_thrust_setpoint; // normalized [-1, 1]
@@ -130,6 +133,7 @@ private:
         (ParamFloat<px4::params::FA_I_Z>) _param_fa_i_z,
 
         (ParamFloat<px4::params::FA_INT_LIM>) _param_fa_int_lim,
+        (ParamFloat<px4::params::FA_INT_LIM_R>) _param_fa_int_lim_r,
 
         (ParamFloat<px4::params::FA_R_R>) _param_fa_r_r,
         (ParamFloat<px4::params::FA_R_P>) _param_fa_r_p,
@@ -138,6 +142,10 @@ private:
         (ParamFloat<px4::params::FA_W_R>) _param_fa_w_r,
         (ParamFloat<px4::params::FA_W_P>) _param_fa_w_p,
         (ParamFloat<px4::params::FA_W_Y>) _param_fa_w_y,
+
+        (ParamFloat<px4::params::FA_I_R_R>) _param_fa_i_r_r,
+        (ParamFloat<px4::params::FA_I_R_P>) _param_fa_i_r_p,
+        (ParamFloat<px4::params::FA_I_R_Y>) _param_fa_i_r_y,
 
         (ParamFloat<px4::params::FA_THR_MAX_X>) _param_fa_thr_max_x,
         (ParamFloat<px4::params::FA_THR_MAX_Y>) _param_fa_thr_max_y,

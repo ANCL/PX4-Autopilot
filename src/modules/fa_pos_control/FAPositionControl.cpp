@@ -38,10 +38,12 @@ void FAPositionControl::parameters_update(bool force)
 
         _k_p = Vector3f(_param_fa_p_x.get(), _param_fa_p_y.get(), _param_fa_p_z.get());
         _k_v = Vector3f(_param_fa_v_x.get(), _param_fa_v_y.get(), _param_fa_v_z.get());
-        _k_r = Vector3f(_param_fa_r_r.get(), _param_fa_r_p.get(), _param_fa_r_y.get());
-        _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_p.get(), _param_fa_w_y.get()); 
         _k_i = Vector3f(_param_fa_i_x.get(), _param_fa_i_y.get(), _param_fa_i_z.get());
+        _k_r = Vector3f(_param_fa_r_r.get(), _param_fa_r_p.get(), _param_fa_r_y.get());
+        _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_p.get(), _param_fa_w_y.get());
+        _k_i_r = Vector3f(_param_fa_i_r_r.get(), _param_fa_i_r_p.get(), _param_fa_i_r_y.get()); 
         _int_limit = _param_fa_int_lim.get();
+        _int_limit_r = _param_fa_int_lim_r.get();
 
         _thrust_maximums = Vector3f(_param_fa_thr_max_x.get(), _param_fa_thr_max_y.get(), _param_fa_thr_max_z.get());
         _torque_maximums = Vector3f(_param_fa_trq_max_r.get(), _param_fa_trq_max_p.get(), _param_fa_trq_max_y.get());
@@ -142,21 +144,26 @@ bool FAPositionControl::update(const float dt)
     _e_w = w - (R.transpose() * R_d) * w_d;
 
     // ---------------------------------------------------------
-    // INTEGRATION & ANTI-WINDUP (WiP)
+    // INTEGRATION & ANTI-WINDUP
     // ---------------------------------------------------------
     bool is_airborne = !land_detected.landed;
 
     if (is_airborne) {
         // accumulate error over time (Riemann sum)
         _e_p_int += _e_p * dt;
+        _e_R_int += _e_R * dt;
 
         // clamp the accumulated error component-wise
         for (int i = 0; i < 3; i++) {
             _e_p_int(i) = math::constrain(_e_p_int(i), -_int_limit, _int_limit);
+            _e_R_int(i) = math::constrain(_e_R_int(i), -_int_limit_r, _int_limit_r);
+
+            PX4_INFO("_e_R_int(%d) = %.6f", i, static_cast<double>(_e_R_int(i)));
         }
     } else {
         // reset the integrator when on the ground to prevent takeoff spikes
         _e_p_int.zero();
+        _e_R_int.zero();
     }
 
     // ---------------------------------------------------------
@@ -170,24 +177,14 @@ bool FAPositionControl::update(const float dt)
     
     // F_b = R^T * F_n
     Dcmf R_transpose(q.inversed()); 
-    Vector3f F_b = R_transpose * F_n;
-
-    // normalize thrust for the PX4 mixer
-    //_vehicle_thrust_setpoint = project_wrench(F_b, _thrust_maximums);
-    
+    Vector3f F_b = R_transpose * F_n;    
 
     // compute and normalize torque setpoint
-    Vector3f tau_b = -_k_r.emult(_e_R) - _k_w.emult(_e_w);
-    //_vehicle_torque_setpoint = project_wrench(tau_b, _torque_maximums);
+    Vector3f tau_b = -_k_r.emult(_e_R) - _k_w.emult(_e_w) - _k_i_r.emult(_e_R_int);
 
     for (int i = 0; i < 3; ++i) {
         _vehicle_thrust_setpoint(i) = F_b(i) / _thrust_maximums(i);
         _vehicle_torque_setpoint(i) = tau_b(i) / _torque_maximums(i); 
-    }
-
-    if (!is_airborne && vel_sp.length() < 0.1f) {
-        _vehicle_thrust_setpoint.zero();
-        _vehicle_torque_setpoint.zero();
     }
 
     // publish outputs using the generic template
@@ -217,32 +214,6 @@ Vector3f FAPositionControl::compute_error(const Vector3f& state, const Vector3f&
         error_vec(i) = PX4_ISFINITE(setpoint(i)) ? (state(i) - setpoint(i)) : 0.0f;
     }
     return error_vec;
-}
-
-// safely normalizes a 3D command vector against maximum limits using Wrench Projection
-Vector3f FAPositionControl::project_wrench(const Vector3f& command, const Vector3f& max_limits) 
-{
-    Vector3f normalized_cmd;
-    float max_saturation = 0.0f;
-
-    // calculate unconstrained normalized commands and find the most saturated axis
-    for (int i = 0; i < 3; ++i) {
-        float limit = math::max(max_limits(i), 0.01f);
-        normalized_cmd(i) = command(i) / limit;
-        
-        // track the absolute maximum saturation factor across all 3 axes
-        float saturation = fabsf(normalized_cmd(i));
-        if (saturation > max_saturation) {
-            max_saturation = saturation;
-        }
-    }
-
-    //  Wrench Projection: if any axis exceeds 1.0, scale ALL axes down uniformly
-    if (max_saturation > 1.0f) {
-        normalized_cmd /= max_saturation; 
-    }
-
-    return normalized_cmd;
 }
 
 // a template to handle the identical boilerplate for publishing thrust and torque
