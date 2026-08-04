@@ -92,6 +92,8 @@ px4_add_romfs_files(
 	4019_gz_x500_gimbal
 	4020_gz_tiltrotor
 	4021_gz_x500_flow
+	
+	4201_gz_f450
 	6001_gz_fy690s
 	6010_gz_fy690s_tilt
 
