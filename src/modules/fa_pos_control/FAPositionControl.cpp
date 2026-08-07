@@ -17,7 +17,7 @@ FAPositionControl::~FAPositionControl()
 
 bool FAPositionControl::init() 
 {
-    // wake up the module whenever new angular velocity data is published
+    // wake up the module whenever new local position data is published
     if (!_vehicle_local_position_sub.registerCallback()) {
     PX4_ERR("Callback registration failed");
     return false;
