@@ -19,6 +19,55 @@
 PARAM_DEFINE_FLOAT(FA_MASS, 3.70f);
 
 /**
+ * Vehicle Inertia X (Jxx)
+ *
+ * Moment of inertia around the body X axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.001
+ * @max 5.0
+ * @decimal 4
+ */
+PARAM_DEFINE_FLOAT(FA_J_X, 0.05f);
+
+/**
+ * Vehicle Inertia Y (Jyy)
+ *
+ * Moment of inertia around the body Y axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.001
+ * @max 5.0
+ * @decimal 4
+ */
+PARAM_DEFINE_FLOAT(FA_J_Y, 0.05f);
+
+/**
+ * Vehicle Inertia Z (Jzz)
+ *
+ * Moment of inertia around the body Z axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.001
+ * @max 5.0
+ * @decimal 4
+ */
+PARAM_DEFINE_FLOAT(FA_J_Z, 0.06f);
+
+/**
+ * Sliding Mode Fractional Power (Alpha)
+ *
+ * Fractional power for the sliding mode attitude control law. 
+ * Should be strictly between 0 and 1 for finite-time convergence.
+ *
+ * @group Fully Actuated Control
+ * @min 0.1
+ * @max 1.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_ALPHA, 0.8f);
+
+/**
  * Position P Gain X
  *
  * Proportional gain for body X-axis position error.
@@ -91,7 +140,56 @@ PARAM_DEFINE_FLOAT(FA_V_Y, 8.0f);
 PARAM_DEFINE_FLOAT(FA_V_Z, 4.0f);
 
 /**
- * Attitude P Gain Roll
+ * Position I Gain X
+ *
+ * Integral gain for body X-axis position error.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_X, 1.0f);
+
+/**
+ * Position I Gain Y
+ *
+ * Integral gain for body Y-axis position error.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_Y, 1.0f);
+
+/**
+ * Position I Gain Z
+ *
+ * Integral gain for body Z-axis position error.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_Z, 1.0f);
+
+/**
+ * Position Integral Anti-Windup Limit
+ *
+ * Maximum allowed value for the position integral state.
+ * Set to 0.0 to disable position integration.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_INT_LIM, 0.0f); // DISABLED BY DEFAULT
+
+/**
+ * Attitude P Gain Roll (k_R)
  *
  * Proportional gain for attitude matrix error around Roll axis.
  *
@@ -103,7 +201,7 @@ PARAM_DEFINE_FLOAT(FA_V_Z, 4.0f);
 PARAM_DEFINE_FLOAT(FA_R_R, 2.0f);
 
 /**
- * Attitude P Gain Pitch
+ * Attitude P Gain Pitch (k_R)
  *
  * Proportional gain for attitude matrix error around Pitch axis.
  *
@@ -115,7 +213,7 @@ PARAM_DEFINE_FLOAT(FA_R_R, 2.0f);
 PARAM_DEFINE_FLOAT(FA_R_P, 2.0f);
 
 /**
- * Attitude P Gain Yaw
+ * Attitude P Gain Yaw (k_R)
  *
  * Proportional gain for attitude matrix error around Yaw axis.
  *
@@ -127,7 +225,7 @@ PARAM_DEFINE_FLOAT(FA_R_P, 2.0f);
 PARAM_DEFINE_FLOAT(FA_R_Y, 2.0f);
 
 /**
- * Angular Rate P Gain Roll
+ * Angular Rate P Gain Roll (k_W)
  *
  * Proportional gain for angular velocity error around Roll axis.
  *
@@ -139,7 +237,7 @@ PARAM_DEFINE_FLOAT(FA_R_Y, 2.0f);
 PARAM_DEFINE_FLOAT(FA_W_R, 1.0f);
 
 /**
- * Angular Rate P Gain Pitch
+ * Angular Rate P Gain Pitch (k_W)
  *
  * Proportional gain for angular velocity error around Pitch axis.
  *
@@ -151,7 +249,7 @@ PARAM_DEFINE_FLOAT(FA_W_R, 1.0f);
 PARAM_DEFINE_FLOAT(FA_W_P, 1.0f);
 
 /**
- * Angular Rate P Gain Yaw
+ * Angular Rate P Gain Yaw (k_W)
  *
  * Proportional gain for angular velocity error around Yaw axis.
  *
@@ -161,6 +259,78 @@ PARAM_DEFINE_FLOAT(FA_W_P, 1.0f);
  * @decimal 2
  */
 PARAM_DEFINE_FLOAT(FA_W_Y, 1.0f);
+
+/**
+ * Attitude Sliding Mode Gain Roll (k_3)
+ *
+ * Sliding mode auxiliary gain (k3) for attitude error around Roll axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K3_R, 0.5f);
+
+/**
+ * Attitude Sliding Mode Gain Pitch (k_3)
+ *
+ * Sliding mode auxiliary gain (k3) for attitude error around Pitch axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K3_P, 0.5f);
+
+/**
+ * Attitude Sliding Mode Gain Yaw (k_3)
+ *
+ * Sliding mode auxiliary gain (k3) for attitude error around Yaw axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K3_Y, 0.5f);
+
+/**
+ * Angular Rate Sliding Mode Gain Roll (k_4)
+ *
+ * Sliding mode auxiliary gain (k4) for angular velocity error around Roll axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K4_R, 0.5f);
+
+/**
+ * Angular Rate Sliding Mode Gain Pitch (k_4)
+ *
+ * Sliding mode auxiliary gain (k4) for angular velocity error around Pitch axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K4_P, 0.5f);
+
+/**
+ * Angular Rate Sliding Mode Gain Yaw (k_4)
+ *
+ * Sliding mode auxiliary gain (k4) for angular velocity error around Yaw axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_K4_Y, 0.5f);
 
 /**
  * Maximum Thrust X
@@ -239,100 +409,3 @@ PARAM_DEFINE_FLOAT(FA_TRQ_MAX_P, 2.0f);
  * @decimal 2
  */
 PARAM_DEFINE_FLOAT(FA_TRQ_MAX_Y, 2.0f);
-
-/**
- * Position I Gain X
- *
- * Integral gain for body X-axis position error.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_X, 1.0f);
-
-/**
- * Position I Gain Y
- *
- * Integral gain for body Y-axis position error.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_Y, 1.0f);
-
-/**
- * Position I Gain Z
- *
- * Integral gain for body Z-axis position error.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_Z, 1.0f);
-
-/**
- * Position Integral Anti-Windup Limit
- *
- * Maximum allowed value for the position integral state.
- * Set to 0.0 to disable position integration.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_INT_LIM, 0.0f); // DISABLED BY DEFAULT
-
-/**
- * Attitude I Gain Roll
- *
- * Integral gain for attitude matrix error around Roll axis.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_R_R, 0.5f);
-
-/**
- * Attitude I Gain Pitch
- *
- * Integral gain for attitude matrix error around Pitch axis.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_R_P, 0.5f);
-
-/**
- * Attitude I Gain Yaw
- *
- * Integral gain for attitude matrix error around Yaw axis.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 10.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_I_R_Y, 0.5f);
-
-/**
- * Attitude Integral Anti-Windup Limit
- *
- * Maximum allowed value for the attitude integral state.
- *
- * @group Fully Actuated Control
- * @min 0.0
- * @max 2.0
- * @decimal 2
- */
-PARAM_DEFINE_FLOAT(FA_INT_LIM_R, 0.0f); // DISABLED BY DEFAULT

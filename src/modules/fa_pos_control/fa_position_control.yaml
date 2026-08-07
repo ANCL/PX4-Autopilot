@@ -7,6 +7,22 @@ parameters:
         type: float
         default: 3.70
         unit: kg
+      FA_J_X:
+        description: Vehicle Inertia X
+        type: float
+        default: 0.05
+      FA_J_Y:
+        description: Vehicle Inertia Y
+        type: float
+        default: 0.05
+      FA_J_Z:
+        description: Vehicle Inertia Z
+        type: float
+        default: 0.06
+      FA_ALPHA:
+        description: Sliding Mode Fractional Power
+        type: float
+        default: 0.8
       FA_P_X:
         description: Position P gain X
         type: float
@@ -47,10 +63,6 @@ parameters:
         description: Position Integral anti-windup limit
         type: float
         default: 2.0
-      FA_INT_LIM_R:
-        description: Attitude Integral anti-windup limit
-        type: float
-        default: 0.2
       FA_R_R:
         description: Attitude P gain Roll
         type: float
@@ -75,18 +87,30 @@ parameters:
         description: Angular Rate P gain Yaw
         type: float
         default: 1.0
-      FA_I_R_R:
-        description: Attitude I gain Roll
+      FA_K3_R:
+        description: Attitude Sliding Mode Gain Roll (k3)
         type: float
-        default: 0.0
-      FA_I_R_P:
-        description: Attitude I gain Pitch
+        default: 0.5
+      FA_K3_P:
+        description: Attitude Sliding Mode Gain Pitch (k3)
         type: float
-        default: 0.0
-      FA_I_R_Y:
-        description: Attitude I gain Yaw
+        default: 0.5
+      FA_K3_Y:
+        description: Attitude Sliding Mode Gain Yaw (k3)
         type: float
-        default: 0.0
+        default: 0.5
+      FA_K4_R:
+        description: Angular Rate Sliding Mode Gain Roll (k4)
+        type: float
+        default: 0.5
+      FA_K4_P:
+        description: Angular Rate Sliding Mode Gain Pitch (k4)
+        type: float
+        default: 0.5
+      FA_K4_Y:
+        description: Angular Rate Sliding Mode Gain Yaw (k4)
+        type: float
+        default: 0.5
       FA_THR_MAX_X:
         description: Maximum Thrust X
         type: float

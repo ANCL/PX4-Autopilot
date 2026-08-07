@@ -34,17 +34,28 @@ void FAPositionControl::parameters_update(bool force)
         _parameter_update_sub.copy(&param_update);
         updateParams();
         
+        // Physical Properties
         _mass = _param_fa_mass.get();
+        _inertia = Vector3f(_param_fa_j_x.get(), _param_fa_j_y.get(), _param_fa_j_z.get());
 
+        // Sliding Mode Alpha
+        _alpha = _param_fa_alpha.get();
+
+        // Position Control Gains
         _k_p = Vector3f(_param_fa_p_x.get(), _param_fa_p_y.get(), _param_fa_p_z.get());
         _k_v = Vector3f(_param_fa_v_x.get(), _param_fa_v_y.get(), _param_fa_v_z.get());
         _k_i = Vector3f(_param_fa_i_x.get(), _param_fa_i_y.get(), _param_fa_i_z.get());
+        _int_limit = _param_fa_int_lim.get();
+
+        // Attitude Control Gains
         _k_r = Vector3f(_param_fa_r_r.get(), _param_fa_r_p.get(), _param_fa_r_y.get());
         _k_w = Vector3f(_param_fa_w_r.get(), _param_fa_w_p.get(), _param_fa_w_y.get());
-        _k_i_r = Vector3f(_param_fa_i_r_r.get(), _param_fa_i_r_p.get(), _param_fa_i_r_y.get()); 
-        _int_limit = _param_fa_int_lim.get();
-        _int_limit_r = _param_fa_int_lim_r.get();
+        
+        // Sliding Mode Auxiliary Gains
+        _k_3 = Vector3f(_param_fa_k3_r.get(), _param_fa_k3_p.get(), _param_fa_k3_y.get());
+        _k_4 = Vector3f(_param_fa_k4_r.get(), _param_fa_k4_p.get(), _param_fa_k4_y.get());
 
+        // Actuator Limits
         _thrust_maximums = Vector3f(_param_fa_thr_max_x.get(), _param_fa_thr_max_y.get(), _param_fa_thr_max_z.get());
         _torque_maximums = Vector3f(_param_fa_trq_max_r.get(), _param_fa_trq_max_p.get(), _param_fa_trq_max_y.get());
     }
@@ -132,16 +143,28 @@ bool FAPositionControl::update(const float dt)
     Dcmf R(q);      // body attitude
     Dcmf R_d(q_d);  // desired attitude
 
-    // (R_d^T * R) - (R^T * R_d)
-    Dcmf R_error_matrix = (R_d.transpose() * R) - (R.transpose() * R_d);
+    // R_{e,r} = R_d^T * R
+    Dcmf R_er = R_d.transpose() * R;
+    // R_{e,r}^T = R^T * R_d
+    Dcmf R_er_T = R.transpose() * R_d;
 
-    // compute 1/2 * vee(R_error_matrix)
+    // e_R = 1/2 (R_{e,r} - R_{e,r}^T)^vee
+    Dcmf R_error_matrix = R_er - R_er_T;
     _e_R(0) = R_error_matrix(2, 1) * 0.5f;
     _e_R(1) = R_error_matrix(0, 2) * 0.5f;
     _e_R(2) = R_error_matrix(1, 0) * 0.5f;
 
-    // compute angular velocity error: e_w = w - [R^T][R_d]w_d
-    _e_w = w - (R.transpose() * R_d) * w_d;
+    // e_w = w - R_{e,r}^T * w_d
+    Vector3f w_r = R_er_T * w_d; 
+    _e_w = w - w_r;
+
+    // Calculate auxiliary signals v_R and v_w
+    Vector3f v_R;
+    Vector3f v_w;
+    for (int i = 0; i < 3; i++) {
+        v_R(i) = frac_sgn(_e_R(i), _alpha);
+        v_w(i) = frac_sgn(_e_w(i), _alpha);
+    }
 
     // ---------------------------------------------------------
     // INTEGRATION & ANTI-WINDUP
@@ -151,17 +174,17 @@ bool FAPositionControl::update(const float dt)
     if (is_airborne) {
         // accumulate error over time (Riemann sum)
         _e_p_int += _e_p * dt;
-        _e_R_int += _e_R * dt;
+        //_e_R_int += _e_R * dt;
 
         // clamp the accumulated error component-wise
         for (int i = 0; i < 3; i++) {
             _e_p_int(i) = math::constrain(_e_p_int(i), -_int_limit, _int_limit);
-            _e_R_int(i) = math::constrain(_e_R_int(i), -_int_limit_r, _int_limit_r);
+            // _e_R_int(i) = math::constrain(_e_R_int(i), -_int_limit_r, _int_limit_r);
         }
     } else {
         // reset the integrator when on the ground to prevent takeoff spikes
         _e_p_int.zero();
-        _e_R_int.zero();
+        // _e_R_int.zero();
     }
 
     // ---------------------------------------------------------
@@ -170,16 +193,29 @@ bool FAPositionControl::update(const float dt)
     static constexpr float g = 9.81f;
     Vector3f z(0.0f, 0.0f, -1.0f);
     
-    // F_n = m*a_d - K_p*e_p - K_v*e_v - K_i*int(e_p) + m*g*e_D
+    // Position Control: F_n = m*a_d - K_p*e_p - K_v*e_v - K_i*int(e_p) + m*g*z
     Vector3f F_n = _mass * (acc_sp + g * z) - _k_p.emult(_e_p) - _k_v.emult(_e_v) - _k_i.emult(_e_p_int);
-    
-    // F_b = R^T * F_n
+        // F_b = R^T * F_n
     Dcmf R_transpose(q.inversed()); 
-    Vector3f F_b = R_transpose * F_n;    
+    Vector3f F_b = R_transpose * F_n; 
 
-    // compute and normalize torque setpoint
-    Vector3f tau_b = -_k_r.emult(_e_R) - _k_w.emult(_e_w) - _k_i_r.emult(_e_R_int);
+    // --- NEW ATTITUDE CONTROL LAW ---
+    // Exact feedback law from the paper: (k_R*e_R + k_w*e_w + k_3*v_R + k_4*v_w)
+    Vector3f feedback = _k_r.emult(_e_R) + _k_w.emult(_e_w) + _k_3.emult(v_R) + _k_4.emult(v_w);
+    
+    // J * feedback
+    Vector3f J_feedback = _inertia.emult(feedback);
 
+    // Gyroscopic term: w x J*w
+    Vector3f J_w = _inertia.emult(w);
+    Vector3f gyroscopic = w % J_w; // % is the cross product operator in PX4 matrix lib
+
+    // Feedforward terms: J * (w x w_r - R_er_T * w_d_dot)
+    Vector3f w_d_dot(0.0f, 0.0f, 0.0f); 
+    Vector3f feedforward = _inertia.emult((w % w_r) - (R_er_T * w_d_dot));
+
+    // Full control law: u_tau = -J*(feedback) + w x J*w - J*(w x w_r - R_er_T*w_d_dot)
+    Vector3f tau_b = -J_feedback + gyroscopic - feedforward;
     for (int i = 0; i < 3; ++i) {
         _vehicle_thrust_setpoint(i) = F_b(i) / _thrust_maximums(i);
         _vehicle_torque_setpoint(i) = tau_b(i) / _torque_maximums(i); 
