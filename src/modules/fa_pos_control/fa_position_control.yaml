@@ -63,6 +63,10 @@ parameters:
         description: Position Integral anti-windup limit
         type: float
         default: 2.0
+      FA_INT_LIM_R:
+        description: Attitude Integral anti-windup limit
+        type: float
+        default: 1.0
       FA_R_R:
         description: Attitude P gain Roll
         type: float
@@ -87,6 +91,18 @@ parameters:
         description: Angular Rate P gain Yaw
         type: float
         default: 1.0
+      FA_I_R_R:
+        description: Attitude I gain Roll
+        type: float
+        default: 0.0
+      FA_I_R_P:
+        description: Attitude I gain Pitch
+        type: float
+        default: 0.0
+      FA_I_R_Y:
+        description: Attitude I gain Yaw
+        type: float
+        default: 0.0
       FA_K3_R:
         description: Attitude Sliding Mode Gain Roll (k3)
         type: float
@@ -110,7 +126,7 @@ parameters:
       FA_K4_Y:
         description: Angular Rate Sliding Mode Gain Yaw (k4)
         type: float
-        default: 0.5
+        default: 0.5        
       FA_THR_MAX_X:
         description: Maximum Thrust X
         type: float

@@ -189,6 +189,19 @@ PARAM_DEFINE_FLOAT(FA_I_Z, 1.0f);
 PARAM_DEFINE_FLOAT(FA_INT_LIM, 0.0f); // DISABLED BY DEFAULT
 
 /**
+ * Attitude Integral Anti-Windup Limit
+ *
+ * Maximum allowed value for the attitude integral state.
+ * Set to 0.0 to disable attitude integration.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_INT_LIM_R, 1.0f); 
+
+/**
  * Attitude P Gain Roll (k_R)
  *
  * Proportional gain for attitude matrix error around Roll axis.
@@ -259,6 +272,42 @@ PARAM_DEFINE_FLOAT(FA_W_P, 1.0f);
  * @decimal 2
  */
 PARAM_DEFINE_FLOAT(FA_W_Y, 1.0f);
+
+/**
+ * Attitude I Gain Roll
+ *
+ * Integral gain for attitude matrix error around Roll axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_R_R, 0.0f);
+
+/**
+ * Attitude I Gain Pitch
+ *
+ * Integral gain for attitude matrix error around Pitch axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_R_P, 0.0f);
+
+/**
+ * Attitude I Gain Yaw
+ *
+ * Integral gain for attitude matrix error around Yaw axis.
+ *
+ * @group Fully Actuated Control
+ * @min 0.0
+ * @max 10.0
+ * @decimal 2
+ */
+PARAM_DEFINE_FLOAT(FA_I_R_Y, 0.0f);
 
 /**
  * Attitude Sliding Mode Gain Roll (k_3)
