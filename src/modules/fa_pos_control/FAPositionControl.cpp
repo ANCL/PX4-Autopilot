@@ -17,8 +17,8 @@ FAPositionControl::~FAPositionControl()
 
 bool FAPositionControl::init() 
 {
-    // wake up the module whenever new local position data is published
-    if (!_vehicle_local_position_sub.registerCallback()) {
+    // wake up the module whenever new angular velocity data arrives
+    if (!_vehicle_angular_velocity_sub.registerCallback()) {
     PX4_ERR("Callback registration failed");
     return false;
 }
@@ -66,7 +66,7 @@ void FAPositionControl::parameters_update(bool force)
 void FAPositionControl::Run()
 {
     if (should_exit()) {
-        _vehicle_local_position_sub.unregisterCallback();
+        _vehicle_angular_velocity_sub.unregisterCallback();
         exit_and_cleanup();
         return;
     }
@@ -74,15 +74,15 @@ void FAPositionControl::Run()
     // check parameters
     parameters_update();
 
-    // only run if we have new attitude data to process
-    if (_vehicle_local_position_sub.updated()) {
+    // only run if we have new angular velocity to process
+    if (_vehicle_angular_velocity_sub.updated()) {
         
         // calculate dt
         const hrt_abstime time_stamp_now = hrt_absolute_time();
         float dt = (time_stamp_now - _time_stamp_last_loop) / 1e6f; // dt in sec
         
-        // constrain dt to reasonable bounds [0.1ms, 50ms]
-        dt = math::constrain(dt, 0.0001f, 0.05f);
+        // constrain dt to reasonable bounds [0.0125ms, 10ms]
+        dt = math::constrain(dt, 0.0000125f, 0.01f);
         _time_stamp_last_loop = time_stamp_now;
 
         // run the control loop
@@ -195,16 +195,17 @@ bool FAPositionControl::update(const float dt)
     static constexpr float g = 9.81f;
     Vector3f z(0.0f, 0.0f, -1.0f);
     
-    // Position Control: F_n = m*a_d - K_p*e_p - K_v*e_v - K_i*int(e_p) + m*g*z
+    // Position Control
+    // F_n = m*a_d - K_p*e_p - K_v*e_v - K_i*int(e_p) + m*g*z
     Vector3f F_n = _mass * (acc_sp + g * z) - _k_p.emult(_e_p) - _k_v.emult(_e_v) - _k_i.emult(_e_p_int);
     
     // F_b = R^T * F_n
     Dcmf R_transpose(q.inversed()); 
     Vector3f F_b = R_transpose * F_n; 
 
-    // Attitude control
+    // Attitude Control
     // k_R*e_R + k_w*e_w + k_3*v_R + k_4*v_w + k_i_r*int(e_R)
-    Vector3f feedback = _k_r.emult(_e_R) + _k_w.emult(_e_w) + _k_3.emult(v_R) + _k_4.emult(v_w) + _k_i_r.emult(_e_R_int);;
+    Vector3f feedback = _k_r.emult(_e_R) + _k_w.emult(_e_w) + _k_3.emult(v_R) + _k_4.emult(v_w) + _k_i_r.emult(_e_R_int);
     
     // J * feedback
     Vector3f J_feedback = _inertia.emult(feedback);

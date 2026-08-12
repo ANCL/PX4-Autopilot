@@ -106,16 +106,16 @@ private:
     uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
     uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
-    uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
     uORB::Subscription _vehicle_rates_setpoint_sub{ORB_ID(vehicle_rates_setpoint)};
     
+    uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+    uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
     uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
-    uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
     
     // uORB Callbacks
-    uORB::SubscriptionCallbackWorkItem _vehicle_local_position_sub{this, ORB_ID(vehicle_local_position)};
+    uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
 
     // uORB Publishers
     uORB::Publication<vehicle_thrust_setpoint_s>  _vehicle_thrust_setpoint_pub{ORB_ID(vehicle_thrust_setpoint)};
