@@ -24,6 +24,7 @@
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
@@ -66,6 +67,9 @@ private:
     matrix::Vector3f project_wrench(const matrix::Vector3f& command, const matrix::Vector3f& max_limits);
     template <typename MsgType, typename PubType> void publish_actuator_setpoint(PubType& publisher, const matrix::Vector3f& data);
 
+    // Loop Performance
+    perf_counter_t	_loop_perf;
+
     // Values
     float _mass;
     matrix::Vector3f _inertia{0.05f, 0.05f, 0.06f}; // Jxx, Jyy, Jzz
@@ -106,14 +110,13 @@ private:
     uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
     uORB::Subscription _trajectory_setpoint_sub{ORB_ID(trajectory_setpoint)};
-    uORB::Subscription _vehicle_attitude_setpoint_sub{ORB_ID(vehicle_attitude_setpoint)};
-    uORB::Subscription _vehicle_rates_setpoint_sub{ORB_ID(vehicle_rates_setpoint)};
     
     uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
     uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _vehicle_land_detected_sub{ORB_ID(vehicle_land_detected)};
     uORB::Subscription _hover_thrust_estimate_sub{ORB_ID(hover_thrust_estimate)};
-    
+    uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
+
     // uORB Callbacks
     uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
 

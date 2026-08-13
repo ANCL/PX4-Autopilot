@@ -4,16 +4,9 @@ menuconfig MODULES_FA_POS_CONTROL
         ---help---
                 Enable support for fa_pos_control
 
-menuconfig USER_FA_POS_CONTROL
-        bool "fa_pos_control running as userspace module"
-        default y
-        depends on BOARD_PROTECTED && MODULES_MC_POS_CONTROL
-        ---help---
-                Put fa_pos_control in userspace memory
-
-
-
-
-
-
-
+config MODULES_FA_POS_CONTROL_STACKSIZE
+	int "fa_pos_control stack size"
+	default 3072
+	depends on MODULES_FA_POS_CONTROL
+	---help---
+		Stack size for the fa_pos_control work queue task.

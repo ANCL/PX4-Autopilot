@@ -1,17 +1,20 @@
 #include "FAPositionControl.hpp"
 #include <drivers/drv_hrt.h>
+#include <lib/perf/perf_counter.h>
 
 using namespace matrix;
 
 FAPositionControl::FAPositionControl() : 
     ModuleParams(nullptr), 
-    WorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers)
+    WorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl), // set at the same queue priority as mc_rate_control
+    _loop_perf(perf_alloc(PC_ELAPSED, MODULE_NAME": cycle"))
 {
     updateParams();
 }
 
 FAPositionControl::~FAPositionControl()
 {
+    perf_free(_loop_perf);
     // cleanup
 }
 
@@ -71,6 +74,8 @@ void FAPositionControl::Run()
         return;
     }
 
+    perf_begin(_loop_perf);
+
     // check parameters
     parameters_update();
 
@@ -88,6 +93,8 @@ void FAPositionControl::Run()
         // run the control loop
         update(dt);
     }
+
+    perf_end(_loop_perf);
 }
 
 bool FAPositionControl::update(const float dt)
@@ -106,18 +113,15 @@ bool FAPositionControl::update(const float dt)
     trajectory_setpoint_s trajectory_sp{};
     _trajectory_setpoint_sub.copy(&trajectory_sp);
 
-    vehicle_attitude_setpoint_s attitude_sp{};
-    _vehicle_attitude_setpoint_sub.copy(&attitude_sp);
-    
-    vehicle_rates_setpoint_s angular_vel_sp{};
-    _vehicle_rates_setpoint_sub.copy(&angular_vel_sp);
-
     // fetch hover thrust & land state
     hover_thrust_estimate_s hover_thrust_estimate{};
     _hover_thrust_estimate_sub.copy(&hover_thrust_estimate);
 
     vehicle_land_detected_s land_detected{};
     _vehicle_land_detected_sub.copy(&land_detected);
+
+    vehicle_control_mode_s _vehicle_control_mode{};
+    _vehicle_control_mode_sub.copy(&_vehicle_control_mode);
     
     // setup state vectors
     Vector3f pos(local_pos.x, local_pos.y, local_pos.z);
@@ -130,8 +134,8 @@ bool FAPositionControl::update(const float dt)
     Vector3f acc_sp(trajectory_sp.acceleration);
     
     // clean up incoming setpoints
-    sanitize_vector(vel_sp);
-    sanitize_vector(acc_sp);
+    // sanitize_vector(vel_sp);
+    // sanitize_vector(acc_sp);
 
     float desired_yaw = PX4_ISFINITE(trajectory_sp.yaw) ? trajectory_sp.yaw : Eulerf(q).psi();
     Quatf q_d(Eulerf(0.0f, 0.0f, desired_yaw)); // hard coded zero roll-pitch for now
@@ -171,9 +175,7 @@ bool FAPositionControl::update(const float dt)
     // ---------------------------------------------------------
     // INTEGRATION & ANTI-WINDUP
     // ---------------------------------------------------------
-    bool is_airborne = !land_detected.landed;
-
-    if (is_airborne) {
+    if (!land_detected.landed || !_vehicle_control_mode.flag_armed) {
         // accumulate error over time (Riemann sum)
         _e_p_int += _e_p * dt;
         _e_R_int += _e_R * dt;
@@ -184,7 +186,7 @@ bool FAPositionControl::update(const float dt)
             _e_R_int(i) = math::constrain(_e_R_int(i), -_int_limit_r, _int_limit_r);
         }
     } else {
-        // reset the integrator when on the ground to prevent takeoff spikes
+        // reset the integrator when on the ground or disarmed to prevent takeoff spikes
         _e_p_int.zero();
         _e_R_int.zero();
     }
