@@ -175,7 +175,7 @@ bool FAPositionControl::update(const float dt)
     // ---------------------------------------------------------
     // INTEGRATION & ANTI-WINDUP
     // ---------------------------------------------------------
-    if (!land_detected.landed || !_vehicle_control_mode.flag_armed) {
+    if (!land_detected.landed && !_vehicle_control_mode.flag_armed) {
         // accumulate error over time (Riemann sum)
         _e_p_int += _e_p * dt;
         _e_R_int += _e_R * dt;
