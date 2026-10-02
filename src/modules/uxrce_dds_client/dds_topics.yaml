@@ -41,35 +41,54 @@ publications:
   - topic: /fmu/out/timesync_status
     type: px4_msgs::msg::TimesyncStatus
 
-  # Additional controller-observation topics exposed over uXRCE-DDS.
-  # These are existing PX4 uORB publications; this block only exposes them
-  # to ROS 2 for flight-control analysis.
+  # --------------------------------------------------------------------------
+  # ANCL controller-development observations
+  #
+  # Project extension to upstream PX4. These entries expose existing uORB
+  # publications to ROS 2 for external-controller development and control-
+  # pipeline analysis; they do not create or modify the underlying PX4 data.
+  #
+  # PX4 normally applies UXRCE_DEFAULT_POLL_RATE to outgoing DDS publications.
+  # That rate limit is disabled for this block so the external controller sees
+  # each source at its native uORB update rate, subject to bridge and transport
+  # capacity. This avoids imposing simulator- or vehicle-specific control rates
+  # in the transport layer.
+  # --------------------------------------------------------------------------
   - topic: /fmu/out/trajectory_setpoint
     type: px4_msgs::msg::TrajectorySetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_local_position_setpoint
     type: px4_msgs::msg::VehicleLocalPositionSetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_attitude_setpoint
     type: px4_msgs::msg::VehicleAttitudeSetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_rates_setpoint
     type: px4_msgs::msg::VehicleRatesSetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_angular_velocity
     type: px4_msgs::msg::VehicleAngularVelocity
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_thrust_setpoint
     type: px4_msgs::msg::VehicleThrustSetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_torque_setpoint
     type: px4_msgs::msg::VehicleTorqueSetpoint
+    use_default_rate_limit: false
 
   - topic: /fmu/out/actuator_motors
     type: px4_msgs::msg::ActuatorMotors
+    use_default_rate_limit: false
 
   - topic: /fmu/out/control_allocator_status
     type: px4_msgs::msg::ControlAllocatorStatus
+    use_default_rate_limit: false
 
   - topic: /fmu/out/vehicle_land_detected
     type: px4_msgs::msg::VehicleLandDetected

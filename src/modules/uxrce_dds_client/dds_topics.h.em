@@ -65,6 +65,7 @@ struct SendSubscription {
 	const char* topic;
 	uint32_t message_version;
 	uint32_t topic_size;
+	bool use_default_rate_limit;
 	UcdrSerializeMethod ucdr_serialize_method;
 };
 
@@ -78,6 +79,7 @@ struct SendTopicsSubs {
 			  "@(pub['topic'])",
 			  get_message_version<@(pub['simple_base_type'])_s>(),
 			  ucdr_topic_size_@(pub['simple_base_type'])(),
+			  @(str(pub.get('use_default_rate_limit', True)).lower()),
 			  &ucdr_serialize_@(pub['simple_base_type']),
 			},
 @[    end for]@
@@ -98,7 +100,12 @@ bool SendTopicsSubs::init(uxrSession *session, uxrStreamId reliable_out_stream_i
 		if (fds[idx].events == 0) {
 			fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
 			fds[idx].events = POLLIN;
-			orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+
+			// Preserve PX4's default DDS publication pacing unless this
+			// publication explicitly requests the native uORB update stream.
+			if (send_subscriptions[idx].use_default_rate_limit) {
+				orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			}
 		}
 
 		if (!create_data_writer(session, reliable_out_stream_id, participant_id, static_cast<ORB_ID>(send_subscriptions[idx].orb_meta->o_id), client_namespace, send_subscriptions[idx].topic,
