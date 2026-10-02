@@ -68,6 +68,9 @@ publications:
   - topic: /fmu/out/actuator_motors
     type: px4_msgs::msg::ActuatorMotors
 
+  - topic: /fmu/out/control_allocator_status
+    type: px4_msgs::msg::ControlAllocatorStatus
+
   - topic: /fmu/out/vehicle_land_detected
     type: px4_msgs::msg::VehicleLandDetected
 
