@@ -14,8 +14,8 @@ publications:
   - topic: /fmu/out/mode_completed
     type: px4_msgs::msg::ModeCompleted
 
-  - topic: /fmu/out/battery_status
-    type: px4_msgs::msg::BatteryStatus
+  # - topic: /fmu/out/battery_status
+  #   type: px4_msgs::msg::BatteryStatus
 
   - topic: /fmu/out/collision_constraints
     type: px4_msgs::msg::CollisionConstraints
@@ -26,8 +26,8 @@ publications:
   - topic: /fmu/out/failsafe_flags
     type: px4_msgs::msg::FailsafeFlags
 
-  - topic: /fmu/out/manual_control_setpoint
-    type: px4_msgs::msg::ManualControlSetpoint
+  # - topic: /fmu/out/manual_control_setpoint
+  #   type: px4_msgs::msg::ManualControlSetpoint
 
   - topic: /fmu/out/message_format_response
     type: px4_msgs::msg::MessageFormatResponse
@@ -35,8 +35,8 @@ publications:
   - topic: /fmu/out/position_setpoint_triplet
     type: px4_msgs::msg::PositionSetpointTriplet
 
-  - topic: /fmu/out/sensor_combined
-    type: px4_msgs::msg::SensorCombined
+  # - topic: /fmu/out/sensor_combined
+  #   type: px4_msgs::msg::SensorCombined
 
   - topic: /fmu/out/timesync_status
     type: px4_msgs::msg::TimesyncStatus
