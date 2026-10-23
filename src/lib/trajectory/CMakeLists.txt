@@ -3,6 +3,7 @@
 
 px4_add_library(trajectory_generator
   Sampler.cpp
+  Plan.cpp
 )
 
 target_include_directories(trajectory_generator PUBLIC
