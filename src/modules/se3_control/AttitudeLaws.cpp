@@ -30,9 +30,9 @@ struct AttitudeErrors
 bool nonnegative(const Vector3 & values)
 {
   return values.isAllFinite() &&
-         values(0) >= 0.0 &&
-         values(1) >= 0.0 &&
-         values(2) >= 0.0;
+         values(0) >= 0.0f &&
+         values(1) >= 0.0f &&
+         values(2) >= 0.0f;
 }
 
 Vector3 component_product(
@@ -65,9 +65,9 @@ bool compute_errors(
 
   // Skew-symmetric part of R_d^T R.
   const Vector3 attitude_error{
-    0.5 * (relative(2, 1) - relative(1, 2)),
-    0.5 * (relative(0, 2) - relative(2, 0)),
-    0.5 * (relative(1, 0) - relative(0, 1))
+    0.5f * (relative(2, 1) - relative(1, 2)),
+    0.5f * (relative(0, 2) - relative(2, 0)),
+    0.5f * (relative(1, 0) - relative(0, 1))
   };
 
   // Map desired-body angular velocity into the current body frame.

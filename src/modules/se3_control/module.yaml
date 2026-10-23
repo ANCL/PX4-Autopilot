@@ -1,0 +1,65 @@
+module_name: Native SE3
+parameters:
+    - group: Native SE3
+      definitions:
+        SE3_ENABLE:
+            description:
+                short: Allow experimental onboard SE3 control
+                long: |
+                    Disabled by default. For SITL validation only. The mode
+                    must be manually started and selected while airborne.
+            type: int32
+            min: 0
+            max: 1
+            default: 0
+        SE3_MASS:
+            description:
+                short: Vehicle mass for native SE3 controller
+            type: float
+            unit: kg
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_KX:
+            description:
+                short: Native SE3 position gain divided by mass
+            type: float
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_KV:
+            description:
+                short: Native SE3 velocity gain divided by mass
+            type: float
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_KRX:
+            description:
+                short: Native SE3 roll attitude-to-rate gain
+            type: float
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_KRY:
+            description:
+                short: Native SE3 pitch attitude-to-rate gain
+            type: float
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_KRZ:
+            description:
+                short: Native SE3 yaw attitude-to-rate gain
+            type: float
+            min: 0.0
+            max: 100.0
+            default: 0.0
+        SE3_RATE_MAX:
+            description:
+                short: Native SE3 maximum requested body rate
+            type: float
+            unit: rad/s
+            min: 0.1
+            max: 12.0
+            default: 3.0

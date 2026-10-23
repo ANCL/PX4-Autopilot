@@ -11,8 +11,8 @@
 namespace se3_control
 {
 
-using Vector3 = matrix::Vector3d;
-using Rotation = matrix::Dcmd;
+using Vector3 = matrix::Vector3f;
+using Rotation = matrix::Dcmf;
 
 struct State
 {
@@ -24,9 +24,9 @@ struct State
 
 struct TranslationGains
 {
-  double mass{0.0};       // Vehicle mass [kg].
-  double position{0.0};   // Position gain [N/m].
-  double velocity{0.0};   // Velocity gain [N s/m].
+  float mass{0.0f};       // Vehicle mass [kg].
+  float position{0.0f};   // Position gain [N/m].
+  float velocity{0.0f};   // Velocity gain [N s/m].
 };
 
 struct TranslationOutput
@@ -86,7 +86,7 @@ struct GeometricOutput
   TranslationOutput translation{};
   ForceDerivatives force_derivatives{};
   DesiredAttitudeDynamics desired_attitude{};
-  double collective_thrust_n{0.0};
+  float collective_thrust_n{0.0f};
 };
 
 }  // namespace se3_control

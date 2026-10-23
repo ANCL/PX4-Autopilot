@@ -27,7 +27,7 @@ bool validate(const Sequence & sequence);
 // After completion, the final position and yaw are held.
 bool sample(
   const Sequence & sequence,
-  double time_s,
+  float time_s,
   const Reference & origin,
   Reference & reference);
 

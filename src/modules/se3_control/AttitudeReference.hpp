@@ -23,9 +23,9 @@ public:
     const Vector3 & force,
     const Vector3 & force_derivative,
     const Vector3 & force_second_derivative,
-    double yaw,
-    double yaw_rate,
-    double yaw_acceleration,
+    float yaw,
+    float yaw_rate,
+    float yaw_acceleration,
     DesiredAttitudeDynamics & output);
 };
 

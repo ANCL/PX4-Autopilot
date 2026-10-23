@@ -24,7 +24,7 @@ namespace se3_control
 namespace
 {
 
-constexpr double kGravity = 9.80665;
+constexpr float kGravity = 9.80665f;
 
 bool finite(const trajectory_generator::Vector3 & vector)
 {
@@ -42,9 +42,9 @@ bool Controller::compute_translation(
   TranslationOutput & output)
 {
   // Validate inputs before calculating a control command.
-  if (!std::isfinite(gains.mass) || gains.mass <= 0.0 ||
-      !std::isfinite(gains.position) || gains.position <= 0.0 ||
-      !std::isfinite(gains.velocity) || gains.velocity <= 0.0 ||
+  if (!std::isfinite(gains.mass) || gains.mass <= 0.0f ||
+      !std::isfinite(gains.position) || gains.position <= 0.0f ||
+      !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
       !state.position.isAllFinite() ||
       !state.velocity.isAllFinite() ||
       !finite(reference.position) ||
@@ -82,7 +82,7 @@ bool Controller::compute_translation(
     position_error * (gains.position / gains.mass) -
     velocity_error * (gains.velocity / gains.mass);
 
-  const Vector3 gravity{0.0, 0.0, kGravity};
+  const Vector3 gravity{0.0f, 0.0f, kGravity};
 
   // Physical force reference used to construct the desired attitude
   // and collective thrust in subsequent controller calculations.
@@ -121,9 +121,9 @@ bool Controller::compute_force_derivatives(
   const TranslationOutput & translation,
   ForceDerivatives & output)
 {
-  if (!std::isfinite(gains.mass) || gains.mass <= 0.0 ||
-      !std::isfinite(gains.position) || gains.position <= 0.0 ||
-      !std::isfinite(gains.velocity) || gains.velocity <= 0.0 ||
+  if (!std::isfinite(gains.mass) || gains.mass <= 0.0f ||
+      !std::isfinite(gains.position) || gains.position <= 0.0f ||
+      !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
       !state.velocity.isAllFinite() ||
       !state.attitude.isAllFinite() ||
       !state.angular_velocity.isAllFinite() ||
@@ -159,7 +159,7 @@ bool Controller::compute_force_derivatives(
     reference.snap[2]
   };
 
-  const Vector3 gravity{0.0, 0.0, kGravity};
+  const Vector3 gravity{0.0f, 0.0f, kGravity};
 
   // Current body z-axis expressed in local NED.
   const Vector3 body_z{
@@ -168,7 +168,7 @@ bool Controller::compute_force_derivatives(
     state.attitude(2, 2)
   };
 
-  const double thrust = -(translation.force * body_z);
+  const float thrust = -(translation.force * body_z);
 
   const Vector3 model_acceleration =
     gravity - body_z * (thrust / gains.mass);
@@ -188,7 +188,7 @@ bool Controller::compute_force_derivatives(
   // R_dot = R hat(Omega).
   // Differentiate the body z-axis using measured body angular velocity.
   const Vector3 body_z_rate_body =
-    state.angular_velocity.cross(Vector3{0.0, 0.0, 1.0});
+    state.angular_velocity.cross(Vector3{0.0f, 0.0f, 1.0f});
 
   const Vector3 body_z_first{
     state.attitude(0, 0) * body_z_rate_body(0) +
@@ -205,7 +205,7 @@ bool Controller::compute_force_derivatives(
   };
 
   // Differentiate f = -A . b3 analytically.
-  const double thrust_first =
+  const float thrust_first =
     -(force_first * body_z) -
     (translation.force * body_z_first);
 
@@ -287,7 +287,7 @@ bool Controller::compute_geometry(
     -(candidate.translation.force * body_z);
 
   if (!std::isfinite(candidate.collective_thrust_n) ||
-      candidate.collective_thrust_n <= 0.0) {
+      candidate.collective_thrust_n <= 0.0f) {
     return false;
   }
 

@@ -20,7 +20,7 @@
 namespace trajectory_generator
 {
 
-using Vector3 = std::array<double, 3>;
+using Vector3 = std::array<float, 3>;
 
 struct Reference
 {
@@ -30,9 +30,9 @@ struct Reference
   Vector3 jerk{};
   Vector3 snap{};
 
-  double yaw{0.0};
-  double yaw_rate{0.0};
-  double yaw_acceleration{0.0};
+  float yaw{0.0f};
+  float yaw_rate{0.0f};
+  float yaw_acceleration{0.0f};
 };
 
 }  // namespace trajectory_generator

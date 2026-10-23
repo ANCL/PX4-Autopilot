@@ -16,24 +16,24 @@ namespace trajectory_generator
 namespace
 {
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr float kPi = 3.14159265358979323846f;
 
 struct TimeScale
 {
-  double s;
-  double d1;
-  double d2;
-  double d3;
-  double d4;
+  float s;
+  float d1;
+  float d2;
+  float d3;
+  float d4;
 };
 
 struct ScalarDynamics
 {
-  double value;
-  double d1;
-  double d2;
-  double d3;
-  double d4;
+  float value;
+  float d1;
+  float d2;
+  float d3;
+  float d4;
 };
 
 bool finite(const Vector3 & vector)
@@ -64,7 +64,7 @@ Vector3 add(const Vector3 & first, const Vector3 & second)
   };
 }
 
-Vector3 scale(const Vector3 & vector, double factor)
+Vector3 scale(const Vector3 & vector, float factor)
 {
   return {
     vector[0] * factor,
@@ -73,7 +73,7 @@ Vector3 scale(const Vector3 & vector, double factor)
   };
 }
 
-Reference stationary(const Vector3 & position, double yaw)
+Reference stationary(const Vector3 & position, float yaw)
 {
   Reference reference{};
   reference.position = position;
@@ -83,76 +83,72 @@ Reference stationary(const Vector3 & position, double yaw)
 
 // Ninth-order C4 interpolation. Derivatives through snap vanish at both
 // endpoints, allowing smooth segments to join stationary references.
-TimeScale smooth_time_scale(double time_s, double duration_s)
+TimeScale smooth_time_scale(float time_s, float duration_s)
 {
-  const double t = std::max(0.0, std::min(time_s, duration_s));
-  const double u = t / duration_s;
+  const float t = std::max(0.0f, std::min(time_s, duration_s));
+  const float u = t / duration_s;
 
-  const double u2 = u * u;
-  const double u3 = u2 * u;
-  const double u4 = u3 * u;
-  const double u5 = u4 * u;
-  const double u6 = u5 * u;
-  const double u7 = u6 * u;
-  const double u8 = u7 * u;
-  const double u9 = u8 * u;
+  // P(1-u) = 1-P(u). Work only on 0 <= w <= 0.5 so its
+  // polynomial does not subtract large, nearly equal numbers.
+  const bool upper_half = u > 0.5f;
+  const float w = upper_half ? 1.0f - u : u;
+  const float w2 = w * w;
+  const float w3 = w2 * w;
+  const float w4 = w3 * w;
+  const float one_minus_w = 1.0f - w;
+  const float v2 = one_minus_w * one_minus_w;
+  const float v3 = v2 * one_minus_w;
+  const float v4 = v3 * one_minus_w;
 
-  const double s =
-    126.0 * u5 - 420.0 * u6 + 540.0 * u7 -
-    315.0 * u8 + 70.0 * u9;
+  // P(w) = 126w^5 - 420w^6 + 540w^7 - 315w^8 + 70w^9.
+  const float p = w4 * w *
+                  (126.0f + w * (-420.0f + w *
+                   (540.0f + w * (-315.0f + 70.0f * w))));
 
-  const double du1 =
-    630.0 * u4 - 2520.0 * u5 + 3780.0 * u6 -
-    2520.0 * u7 + 630.0 * u8;
+  // Exact derivatives with respect to dimensionless u.
+  const float d1 = 630.0f * w4 * v4;
+  const float d2 = 2520.0f * w3 * v3 * (1.0f - 2.0f * w);
+  const float d3 = 2520.0f * w2 * v2 * (3.0f - 14.0f * w + 14.0f * w2);
+  const float d4 = 15120.0f * w * one_minus_w * (1.0f - 2.0f * w) *
+                   (1.0f - 7.0f * w + 7.0f * w2);
 
-  const double du2 =
-    2520.0 * u3 - 12600.0 * u4 + 22680.0 * u5 -
-    17640.0 * u6 + 5040.0 * u7;
+  const float inv_t = 1.0f / duration_s;
+  const float inv_t2 = inv_t * inv_t;
+  const float inv_t3 = inv_t2 * inv_t;
+  const float inv_t4 = inv_t3 * inv_t;
 
-  const double du3 =
-    7560.0 * u2 - 50400.0 * u3 + 113400.0 * u4 -
-    105840.0 * u5 + 35280.0 * u6;
-
-  const double du4 =
-    15120.0 * u - 151200.0 * u2 + 453600.0 * u3 -
-    529200.0 * u4 + 211680.0 * u5;
-
-  const double inv_t = 1.0 / duration_s;
-  const double inv_t2 = inv_t * inv_t;
-  const double inv_t3 = inv_t2 * inv_t;
-  const double inv_t4 = inv_t3 * inv_t;
-
+  // P' and P''' are symmetric; P'' and P'''' are antisymmetric.
   return {
-    s,
-    du1 * inv_t,
-    du2 * inv_t2,
-    du3 * inv_t3,
-    du4 * inv_t4
+    upper_half ? 1.0f - p : p,
+    d1 * inv_t,
+    (upper_half ? -d2 : d2) * inv_t2,
+    d3 * inv_t3,
+    (upper_half ? -d4 : d4) * inv_t4
   };
 }
 
 // Analytical derivatives of amplitude*sin(phase(t)) through fourth order.
 ScalarDynamics sinusoid(
-  double amplitude,
-  double phase,
-  double p1,
-  double p2,
-  double p3,
-  double p4)
+  float amplitude,
+  float phase,
+  float p1,
+  float p2,
+  float p3,
+  float p4)
 {
-  const double s = std::sin(phase);
-  const double c = std::cos(phase);
+  const float s = std::sin(phase);
+  const float c = std::cos(phase);
 
   return {
     amplitude * s,
     amplitude * c * p1,
     amplitude * (-s * p1 * p1 + c * p2),
-    amplitude * (-c * p1 * p1 * p1 - 3.0 * s * p1 * p2 + c * p3),
+    amplitude * (-c * p1 * p1 * p1 - 3.0f * s * p1 * p2 + c * p3),
     amplitude * (
       s * p1 * p1 * p1 * p1 -
-      6.0 * c * p1 * p1 * p2 -
-      3.0 * s * p2 * p2 -
-      4.0 * s * p1 * p3 +
+      6.0f * c * p1 * p1 * p2 -
+      3.0f * s * p2 * p2 -
+      4.0f * s * p1 * p3 +
       c * p4
     )
   };
@@ -194,11 +190,11 @@ Reference sample_figure_eight(
   const Reference & origin,
   const TimeScale & q)
 {
-  const double angle = 2.0 * kPi * segment.turns * q.s;
-  const double a1 = 2.0 * kPi * segment.turns * q.d1;
-  const double a2 = 2.0 * kPi * segment.turns * q.d2;
-  const double a3 = 2.0 * kPi * segment.turns * q.d3;
-  const double a4 = 2.0 * kPi * segment.turns * q.d4;
+  const float angle = 2.0f * kPi * segment.turns * q.s;
+  const float a1 = 2.0f * kPi * segment.turns * q.d1;
+  const float a2 = 2.0f * kPi * segment.turns * q.d2;
+  const float a3 = 2.0f * kPi * segment.turns * q.d3;
+  const float a4 = 2.0f * kPi * segment.turns * q.d4;
 
   const ScalarDynamics x =
     sinusoid(segment.x_amplitude_m, angle, a1, a2, a3, a4);
@@ -207,11 +203,11 @@ Reference sample_figure_eight(
   const ScalarDynamics y =
     sinusoid(
       segment.y_amplitude_m,
-      2.0 * angle,
-      2.0 * a1,
-      2.0 * a2,
-      2.0 * a3,
-      2.0 * a4
+      2.0f * angle,
+      2.0f * a1,
+      2.0f * a2,
+      2.0f * a3,
+      2.0f * a4
     );
 
   Reference reference{};
@@ -222,10 +218,10 @@ Reference sample_figure_eight(
     origin.position[2]
   };
 
-  reference.velocity = {x.d1, y.d1, 0.0};
-  reference.acceleration = {x.d2, y.d2, 0.0};
-  reference.jerk = {x.d3, y.d3, 0.0};
-  reference.snap = {x.d4, y.d4, 0.0};
+  reference.velocity = {x.d1, y.d1, 0.0f};
+  reference.acceleration = {x.d2, y.d2, 0.0f};
+  reference.jerk = {x.d3, y.d3, 0.0f};
+  reference.snap = {x.d4, y.d4, 0.0f};
   reference.yaw = origin.yaw;
 
   return reference;
@@ -236,26 +232,26 @@ Reference sample_circle(
   const Reference & origin,
   const TimeScale & q)
 {
-  const double angle = 2.0 * kPi * segment.turns * q.s;
+  const float angle = 2.0f * kPi * segment.turns * q.s;
 
-  const double w1 = 2.0 * kPi * segment.turns * q.d1;
-  const double w2 = 2.0 * kPi * segment.turns * q.d2;
-  const double w3 = 2.0 * kPi * segment.turns * q.d3;
-  const double w4 = 2.0 * kPi * segment.turns * q.d4;
+  const float w1 = 2.0f * kPi * segment.turns * q.d1;
+  const float w2 = 2.0f * kPi * segment.turns * q.d2;
+  const float w3 = 2.0f * kPi * segment.turns * q.d3;
+  const float w4 = 2.0f * kPi * segment.turns * q.d4;
 
-  const double c = std::cos(angle);
-  const double s = std::sin(angle);
+  const float c = std::cos(angle);
+  const float s = std::sin(angle);
 
-  const double r = segment.radius_m;
-  const double h =
-    segment.type == Segment::Type::Helix ? segment.height_m : 0.0;
+  const float r = segment.radius_m;
+  const float h =
+    segment.type == Segment::Type::Helix ? segment.height_m : 0.0f;
 
   Reference reference{};
 
   // The segment starts at origin.position. Its circle center is one radius
   // toward negative local-NED x, so entry has no position discontinuity.
   reference.position = {
-    origin.position[0] + r * (c - 1.0),
+    origin.position[0] + r * (c - 1.0f),
     origin.position[1] + r * s,
     origin.position[2] + h * q.s
   };
@@ -273,24 +269,24 @@ Reference sample_circle(
   };
 
   reference.jerk = {
-    r * (s * w1 * w1 * w1 - 3.0 * c * w1 * w2 - s * w3),
-    r * (-c * w1 * w1 * w1 - 3.0 * s * w1 * w2 + c * w3),
+    r * (s * w1 * w1 * w1 - 3.0f * c * w1 * w2 - s * w3),
+    r * (-c * w1 * w1 * w1 - 3.0f * s * w1 * w2 + c * w3),
     h * q.d3
   };
 
   reference.snap = {
     r * (
-      6.0 * s * w1 * w1 * w2 -
+      6.0f * s * w1 * w1 * w2 -
       s * w4 +
       c * w1 * w1 * w1 * w1 -
-      4.0 * c * w1 * w3 -
-      3.0 * c * w2 * w2
+      4.0f * c * w1 * w3 -
+      3.0f * c * w2 * w2
     ),
     r * (
       s * w1 * w1 * w1 * w1 -
-      4.0 * s * w1 * w3 -
-      3.0 * s * w2 * w2 -
-      6.0 * c * w1 * w1 * w2 +
+      4.0f * s * w1 * w3 -
+      3.0f * s * w2 * w2 -
+      6.0f * c * w1 * w1 * w2 +
       c * w4
     ),
     h * q.d4
@@ -304,7 +300,7 @@ Reference sample_circle(
 // Select a primitive while keeping sequence logic independent of its shape.
 Reference sample_segment(
   const Segment & segment,
-  double time_s,
+  float time_s,
   const Reference & origin)
 {
   if (segment.type == Segment::Type::Hold) {
@@ -347,12 +343,12 @@ bool validate(const Sequence & sequence)
     return false;
   }
 
-  double total_duration_s = 0.0;
+  float total_duration_s = 0.0f;
 
   for (std::size_t index = 0; index < sequence.count; ++index) {
     const Segment & segment = sequence.segments[index];
 
-    if (!std::isfinite(segment.duration_s) || segment.duration_s <= 0.0 ||
+    if (!std::isfinite(segment.duration_s) || segment.duration_s < 0.01f ||
         !finite(segment.offset) ||
         !std::isfinite(segment.radius_m) ||
         !std::isfinite(segment.height_m) ||
@@ -365,14 +361,14 @@ bool validate(const Sequence & sequence)
 
     if ((segment.type == Segment::Type::Circle ||
          segment.type == Segment::Type::Helix) &&
-        segment.radius_m <= 0.0) {
+        segment.radius_m <= 0.0f) {
       return false;
     }
 
     if (segment.type == Segment::Type::FigureEight &&
-        (segment.x_amplitude_m <= 0.0 ||
-         segment.y_amplitude_m <= 0.0 ||
-         segment.turns <= 0.0)) {
+        (segment.x_amplitude_m <= 0.0f ||
+         segment.y_amplitude_m <= 0.0f ||
+         segment.turns <= 0.0f)) {
       return false;
     }
 
@@ -395,7 +391,7 @@ bool validate(const Sequence & sequence)
 // At an exact boundary, the ending segment owns the returned sample.
 bool sample(
   const Sequence & sequence,
-  double time_s,
+  float time_s,
   const Reference & origin,
   Reference & reference)
 {
@@ -407,7 +403,7 @@ bool sample(
   }
 
   Reference segment_origin = stationary(origin.position, origin.yaw);
-  double remaining_s = std::max(0.0, time_s);
+  float remaining_s = std::max(0.0f, time_s);
 
   for (std::size_t index = 0; index < sequence.count; ++index) {
     const Segment & segment = sequence.segments[index];

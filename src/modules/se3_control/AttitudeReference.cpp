@@ -21,7 +21,8 @@ namespace se3_control
 namespace
 {
 
-constexpr double kDirectionTolerance = 1.0e-12;
+// Avoid poorly conditioned normalization in single precision.
+constexpr float kDirectionTolerance = 1.0e-6f;
 
 struct DirectionDynamics
 {
@@ -53,27 +54,27 @@ bool normalized_dynamics(
     return false;
   }
 
-  const double magnitude = std::sqrt(vector * vector);
+  const float magnitude = std::sqrt(vector * vector);
 
   if (!std::isfinite(magnitude) ||
       magnitude <= kDirectionTolerance) {
     return false;
   }
 
-  const Vector3 direction = vector * (1.0 / magnitude);
-  const double magnitude_first = direction * first;
+  const Vector3 direction = vector * (1.0f / magnitude);
+  const float magnitude_first = direction * first;
 
   const Vector3 direction_first =
-    (first - direction * magnitude_first) * (1.0 / magnitude);
+    (first - direction * magnitude_first) * (1.0f / magnitude);
 
-  const double magnitude_second =
+  const float magnitude_second =
     (first * first + vector * second -
      magnitude_first * magnitude_first) / magnitude;
 
   const Vector3 direction_second =
     (second -
-     direction_first * (2.0 * magnitude_first) -
-     direction * magnitude_second) * (1.0 / magnitude);
+     direction_first * (2.0f * magnitude_first) -
+     direction * magnitude_second) * (1.0f / magnitude);
 
   if (!direction.isAllFinite() ||
       !direction_first.isAllFinite() ||
@@ -90,9 +91,9 @@ bool desired_basis(
   const Vector3 & force,
   const Vector3 & force_first,
   const Vector3 & force_second,
-  double yaw,
-  double yaw_rate,
-  double yaw_acceleration,
+  float yaw,
+  float yaw_rate,
+  float yaw_acceleration,
   BasisDynamics & basis)
 {
   DirectionDynamics b3{};
@@ -102,22 +103,22 @@ bool desired_basis(
     return false;
   }
 
-  const double cosine = std::cos(yaw);
-  const double sine = std::sin(yaw);
+  const float cosine = std::cos(yaw);
+  const float sine = std::sin(yaw);
 
   // Horizontal heading direction and its analytic derivatives.
-  const Vector3 heading{cosine, sine, 0.0};
+  const Vector3 heading{cosine, sine, 0.0f};
 
   const Vector3 heading_first{
     -sine * yaw_rate,
     cosine * yaw_rate,
-    0.0
+    0.0f
   };
 
   const Vector3 heading_second{
     -cosine * yaw_rate * yaw_rate - sine * yaw_acceleration,
     -sine * yaw_rate * yaw_rate + cosine * yaw_acceleration,
-    0.0
+    0.0f
   };
 
   // The second desired body axis must be perpendicular to both the
@@ -130,7 +131,7 @@ bool desired_basis(
 
   const Vector3 b2_raw_second =
     b3.second.cross(heading) +
-    b3.first.cross(heading_first) * 2.0 +
+    b3.first.cross(heading_first) * 2.0f +
     b3.value.cross(heading_second);
 
   DirectionDynamics b2{};
@@ -148,7 +149,7 @@ bool desired_basis(
     b2.value.cross(b3.first),
 
     b2.second.cross(b3.value) +
-    b2.first.cross(b3.first) * 2.0 +
+    b2.first.cross(b3.first) * 2.0f +
     b2.value.cross(b3.second)
   };
 
@@ -169,15 +170,15 @@ bool desired_basis(
 Vector3 angular_velocity(const BasisDynamics & basis)
 {
   return {
-    0.5 * (
+    0.5f * (
       basis.b3.value * basis.b2.first -
       basis.b2.value * basis.b3.first
     ),
-    0.5 * (
+    0.5f * (
       basis.b1.value * basis.b3.first -
       basis.b3.value * basis.b1.first
     ),
-    0.5 * (
+    0.5f * (
       basis.b2.value * basis.b1.first -
       basis.b1.value * basis.b2.first
     )
@@ -189,15 +190,15 @@ Vector3 angular_velocity(const BasisDynamics & basis)
 Vector3 angular_acceleration(const BasisDynamics & basis)
 {
   return {
-    0.5 * (
+    0.5f * (
       basis.b3.value * basis.b2.second -
       basis.b2.value * basis.b3.second
     ),
-    0.5 * (
+    0.5f * (
       basis.b1.value * basis.b3.second -
       basis.b3.value * basis.b1.second
     ),
-    0.5 * (
+    0.5f * (
       basis.b2.value * basis.b1.second -
       basis.b1.value * basis.b2.second
     )
@@ -210,9 +211,9 @@ bool AttitudeReference::compute(
   const Vector3 & force,
   const Vector3 & force_derivative,
   const Vector3 & force_second_derivative,
-  double yaw,
-  double yaw_rate,
-  double yaw_acceleration,
+  float yaw,
+  float yaw_rate,
+  float yaw_acceleration,
   DesiredAttitudeDynamics & output)
 {
   if (!std::isfinite(yaw) ||

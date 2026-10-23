@@ -30,20 +30,20 @@ struct Segment
   };
 
   Type type{Type::Hold};
-  double duration_s{0.0};
+  float duration_s{0.0f};
 
   // Translation in local NED [m].
   Vector3 offset{};
 
   // Circular and helical trajectory parameters.
-  double radius_m{0.0};
-  double height_m{0.0};
-  double turns{0.0};
+  float radius_m{0.0f};
+  float height_m{0.0f};
+  float turns{0.0f};
 
   // Heading and figure-eight parameters.
-  double yaw_offset_rad{0.0};
-  double x_amplitude_m{0.0};
-  double y_amplitude_m{0.0};
+  float yaw_offset_rad{0.0f};
+  float x_amplitude_m{0.0f};
+  float y_amplitude_m{0.0f};
 };
 
 // Fixed-capacity sequence for deterministic onboard execution.
