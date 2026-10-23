@@ -1,13 +1,10 @@
-// PX4-native SE(3) body-rate handoff (initial SITL-only integration).
+// Geometric SE(3) control with body-rate and collective-thrust setpoints.
 //
-// Ownership contract:
-//   This module owns ONLY the desired position/attitude -> body-rate setpoint.
-//   mc_rate_control owns gyro-rate feedback, PID, and torque production.
-//   control_allocator owns allocation; PX4 owns output limiting and failsafes.
+// The controller tracks a position and yaw reference using vehicle state.
+// mc_rate_control tracks commanded body rates; control_allocator produces
+// actuator commands. Commander manages flight-mode transitions and failsafes.
 //
-// Flight-mode registration uses PX4's existing Commander external-mode
-// registration mechanism locally over uORB: no ROS, DDS or new nav-state enum.
-// The module is NOT automatically started or selected.
+// Setpoints are published only while this registered flight mode is active.
 
 #include "AttitudeLaws.hpp"
 #include "Controller.hpp"
@@ -55,7 +52,7 @@ constexpr float kGravity = 9.80665f;
 constexpr hrt_abstime kPositionTimeout = 200_ms;
 constexpr hrt_abstime kAttitudeTimeout = 200_ms;
 constexpr hrt_abstime kGyroTimeout = 100_ms;
-// Reject a commanded trajectory that would jump away from the hover at entry.
+// Maximum start-pose error allowed before trajectory execution.
 constexpr float kMaxStartDistanceM = 0.15f;
 constexpr float kMaxStartYawErrorRad = 0.20f;
 
@@ -72,8 +69,8 @@ public:
 
     ~Se3Runtime() override
     {
-        // Inform Commander that this external mode no longer exists.
-        // The selected failsafe action is PX4-owned, not set by this module.
+        // Unregister the flight mode when the controller shuts down.
+        // Commander handles any required mode transition.
         if (_mode_id >= 0 && _arming_check_id >= 0) {
             unregister_ext_component_s unregister{};
             unregister.timestamp = hrt_absolute_time();
@@ -109,7 +106,7 @@ public:
         request.activate_mode_immediately = false;
         _register_pub.publish(request);
 
-        ScheduleOnInterval(10_ms); // 100 Hz outer loop; PX4 gyro rate PID runs independently.
+        ScheduleOnInterval(10_ms); // SE(3) reference update at 100 Hz.
         return true;
     }
 
@@ -120,7 +117,6 @@ public:
                  (int)_active.load(), (int)_faulted);
         PX4_INFO("trajectory: %s", _executing.load() ? "running" :
                  (_completed.load() ? "completed (holding final pose)" : "holding"));
-        PX4_INFO("PID/allocator: PX4 native (not reimplemented)");
         return 0;
     }
 
@@ -218,7 +214,7 @@ private:
             return PX4_ERROR;
         }
 
-        PX4_INFO("SE3 mode %d requested; confirm Commander accepted", mode_id);
+        PX4_INFO("requested SE3 mode %d", mode_id);
         return PX4_OK;
     }
 
@@ -250,7 +246,7 @@ private:
         // A later load cannot silently replace the plan already checked.
         _run_revision.store(revision);
         _run_requested.store(true);
-        PX4_INFO("trajectory run requested; awaiting onboard control tick");
+        PX4_INFO("trajectory start requested");
         return PX4_OK;
     }
 
@@ -291,9 +287,7 @@ private:
 
     void capture_hold()
     {
-        // Position mode or the previous SE3 trajectory has relinquished
-        // the reference. Hold the latest measured NED pose, not a stale
-        // waypoint or a translated copy of the loaded trajectory.
+        // Initialize a stationary reference at the measured local pose.
         _origin = {};
         _origin.position = {_position.x, _position.y, _position.z};
         _origin.yaw = _position.heading;
@@ -388,9 +382,7 @@ private:
             _run_requested.store(false);
             _hold_requested.store(false);
 
-            // Keep any SE3 fault latched throughout the flight. Commander
-            // owns recovery using its existing external-mode failsafe.
-            // Reset only on the ground, never merely because the mode changed.
+            // Keep faults latched until disarm, including after a mode change.
             if (_status.arming_state == vehicle_status_s::ARMING_STATE_DISARMED) {
                 _faulted = false;
             }
@@ -505,8 +497,7 @@ private:
             return;
         }
 
-        // The normalized conversion is the existing PX4 hover-thrust
-        // convention; no physical-wrench uORB messages or new allocator.
+        // Convert collective thrust to the normalized PX4 body-z convention.
         const float thrust = _param_hover.get() * geometric.collective_thrust_n / (mass * kGravity);
         const float rate_limit = _param_rate_max.get();
 
@@ -572,7 +563,7 @@ private:
                fresh(now, _gyro.timestamp, kGyroTimeout);
     }
 
-    // Existing PX4 Commander external-mode protocol, not a new protocol.
+    // Commander registration, flight-mode state, and rate setpoint interfaces.
     uORB::Publication<register_ext_component_request_s> _register_pub{ORB_ID(register_ext_component_request)};
     uORB::Subscription _register_reply_sub{ORB_ID(register_ext_component_reply)};
     uORB::Publication<vehicle_control_mode_s> _mode_control_config_pub{ORB_ID(config_control_setpoints)};
@@ -633,8 +624,7 @@ private:
 
 extern "C" __EXPORT int se3_control_main(int argc, char *argv[])
 {
-    // Do not deliberately stop a running controller while flying. An
-    // unexpected crash is handled by PX4's existing external-mode timeout.
+    // Allow shutdown only when disarmed; Commander handles a lost mode.
     if (argc > 1 && std::strcmp(argv[1], "stop") == 0) {
         uORB::Subscription status_sub{ORB_ID(vehicle_status)};
         vehicle_status_s status{};

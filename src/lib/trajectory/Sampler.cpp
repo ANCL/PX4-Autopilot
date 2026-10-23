@@ -1,10 +1,7 @@
-// Analytic sampling for controller-independent trajectory sequences.
+// Analytic trajectory sampling from fixed-capacity segment sequences.
 //
-// This preserves the toolkit's trajectory mathematics: ninth-order time
-// scaling, derivatives through snap, and consistent segment boundaries.
-//
-// The implementation uses bounded storage and does not require ROS, YAML,
-// dynamic allocation, or exceptions during onboard execution.
+// Ninth-order time scaling provides derivatives through snap and smooth
+// boundaries between stationary and continuously interpolated segments.
 
 #include "Sampler.hpp"
 

@@ -1,5 +1,5 @@
-// Bounded on-aircraft trajectory file reader and shared plan store.
-// No YAML parser, heap allocation, file I/O, or locks in the control loop.
+// Read and validate bounded trajectory files for onboard controllers.
+// File parsing and plan storage occur outside the control update loop.
 
 #include "Plan.hpp"
 

@@ -1,6 +1,6 @@
 // Geometric translational tracking.
 //
-// The position and velocity errors follow the toolkit controller:
+// Position and velocity tracking errors:
 //
 //   e_x = x - x_d
 //   e_v = v - v_d

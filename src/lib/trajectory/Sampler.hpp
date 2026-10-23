@@ -1,11 +1,7 @@
 // Analytic trajectory sampling interface.
 //
-// Sampling produces the same reference fields as the toolkit generator.
-// The implementation must preserve the existing segment mathematics,
-// interpolation rules, and sequence-boundary behavior.
-//
-// Invalid configurations are reported explicitly instead of throwing
-// exceptions. The sampler does not depend on PX4 or ROS 2.
+// Evaluates a bounded segment sequence at elapsed trajectory time.
+// Invalid inputs are reported by the return value.
 
 #pragma once
 

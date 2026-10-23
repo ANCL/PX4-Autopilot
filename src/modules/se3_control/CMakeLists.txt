@@ -1,4 +1,4 @@
-# Native geometric outer loop; PID, allocation and outputs remain PX4-owned.
+# Geometric SE(3) body-rate control module.
 px4_add_module(
     MODULE modules__se3_control
     MAIN se3_control

@@ -72,7 +72,7 @@ extern "C" __EXPORT int trajectory_main(int argc, char *argv[])
             PX4_ERR("trajectory storage rejected plan");
             return PX4_ERROR;
         }
-        PX4_INFO("selected %s (%u segments, %.2f s); NOT RUNNING", plan.name,
+        PX4_INFO("selected %s: %u segments, %.2f s", plan.name,
                  static_cast<unsigned>(plan.sequence.count), static_cast<double>(plan.duration_s));
         return PX4_OK;
     }

@@ -1,7 +1,6 @@
 // Analytic desired-attitude dynamics for the geometric SE(3) controller.
 //
-// The construction follows Lee et al. (2010) and the existing toolkit's
-// attitude_reference implementation.
+// Desired body axes follow Lee et al. (2010).
 //
 //   b3_d = -A / ||A||
 //   b2_d = normalize(b3_d x b1_c)

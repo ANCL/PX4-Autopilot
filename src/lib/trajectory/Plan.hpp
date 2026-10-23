@@ -1,8 +1,7 @@
-// Shared, fixed-capacity trajectory plans for PX4-native controllers.
+// Shared, fixed-capacity trajectory plans for PX4 controllers.
 //
-// Loading a plan never moves an aircraft. A flight-mode controller explicitly
-// snapshots an already-validated plan when it receives its own run command.
-// The plan origin is ABSOLUTE PX4 local NED, never the vehicle's entry pose.
+// A selected plan contains absolute PX4 local NED start position and yaw.
+// The active controller snapshots the selected plan on an explicit run request.
 
 #pragma once
 
