@@ -1,5 +1,5 @@
 // Shell access to the shared, validated, persistent trajectory catalog.
-// Selection only copies a plan into RAM. It never commands motion or a mode.
+// Selection only stages a plan; start also explicitly requests SE3 execution.
 
 #include <trajectory/Plan.hpp>
 
@@ -50,7 +50,8 @@ extern "C" __EXPORT int trajectory_main(int argc, char *argv[])
         return PX4_OK;
     }
 
-    if (argc == 3 && std::strcmp(argv[1], "select") == 0) {
+    if (argc == 3 && (std::strcmp(argv[1], "select") == 0 ||
+                      std::strcmp(argv[1], "start") == 0)) {
         if (!valid_name(argv[2])) {
             PX4_ERR("invalid trajectory name");
             return PX4_ERROR;
@@ -68,12 +69,25 @@ extern "C" __EXPORT int trajectory_main(int argc, char *argv[])
             return PX4_ERROR;
         }
         std::strncpy(plan.name, argv[2], sizeof(plan.name) - 1);
-        if (!trajectory_generator::store_plan(plan)) {
-            PX4_ERR("trajectory storage rejected plan");
-            return PX4_ERROR;
+        const bool start = std::strcmp(argv[1], "start") == 0;
+
+        if (start) {
+            // This request is accepted only while the registered SE3 mode is
+            // active and holding. No start-pose/yaw alignment is performed.
+            if (!trajectory_generator::request_se3_start(plan)) {
+                PX4_ERR("SE3 must be active and holding; start not requested");
+                return PX4_ERROR;
+            }
+            PX4_INFO("start requested: %s (%u segments, %.2f s)", plan.name,
+                     static_cast<unsigned>(plan.sequence.count), static_cast<double>(plan.duration_s));
+        } else {
+            if (!trajectory_generator::store_plan(plan)) {
+                PX4_ERR("trajectory storage rejected plan");
+                return PX4_ERROR;
+            }
+            PX4_INFO("selected %s: %u segments, %.2f s", plan.name,
+                     static_cast<unsigned>(plan.sequence.count), static_cast<double>(plan.duration_s));
         }
-        PX4_INFO("selected %s: %u segments, %.2f s", plan.name,
-                 static_cast<unsigned>(plan.sequence.count), static_cast<double>(plan.duration_s));
         return PX4_OK;
     }
 
@@ -93,6 +107,6 @@ extern "C" __EXPORT int trajectory_main(int argc, char *argv[])
         return PX4_OK;
     }
 
-    PX4_INFO("usage: trajectory list | select <name> | status");
+    PX4_INFO("usage: trajectory list | select <name> | start <name> | status");
     return PX4_ERROR;
 }

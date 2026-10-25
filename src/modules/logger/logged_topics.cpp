@@ -129,11 +129,12 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("tecs_status", 200);
 	add_optional_topic("tiltrotor_extra_controls", 100);
 	add_topic("trajectory_setpoint", 200);
+	add_topic("se3_trajectory_status", 10);
 	add_topic("transponder_report");
 	add_topic("vehicle_acceleration", 50);
 	add_topic("vehicle_air_data", 200);
-	add_topic("vehicle_angular_velocity", 20);
-	add_topic("vehicle_attitude", 50);
+	add_topic("vehicle_angular_velocity", 10);
+	add_topic("vehicle_attitude", 20);
 	add_topic("vehicle_attitude_setpoint", 50);
 	add_topic("vehicle_command");
 	add_topic("vehicle_command_ack");
@@ -142,10 +143,10 @@ void LoggedTopics::add_default_topics()
 	add_topic("vehicle_global_position", 200);
 	add_topic("vehicle_gps_position", 100);
 	add_topic("vehicle_land_detected");
-	add_topic("vehicle_local_position", 100);
+	add_topic("vehicle_local_position", 20);
 	add_topic("vehicle_local_position_setpoint", 100);
 	add_topic("vehicle_magnetometer", 200);
-	add_topic("vehicle_rates_setpoint", 20);
+	add_topic("vehicle_rates_setpoint", 10);
 	add_topic("vehicle_roi", 1000);
 	add_topic("vehicle_status");
 	add_optional_topic("vtol_vehicle_status", 200);
@@ -154,8 +155,8 @@ void LoggedTopics::add_default_topics()
 	// multi topics
 	add_optional_topic_multi("actuator_outputs", 100, 3);
 	add_optional_topic_multi("airspeed_wind", 1000, 4);
-	add_optional_topic_multi("control_allocator_status", 200, 2);
-	add_optional_topic_multi("rate_ctrl_status", 200, 2);
+	add_optional_topic_multi("control_allocator_status", 20, 2);
+	add_optional_topic_multi("rate_ctrl_status", 20, 2);
 	add_optional_topic_multi("sensor_hygrometer", 500, 4);
 	add_optional_topic_multi("rpm", 200);
 	add_topic_multi("timesync_status", 1000, 3);
@@ -204,7 +205,7 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("pps_capture");
 
 	// additional control allocation logging
-	add_topic("actuator_motors", 100);
+	add_topic("actuator_motors", 20);
 	add_topic("actuator_servos", 100);
 	add_topic_multi("vehicle_thrust_setpoint", 20, 2);
 	add_topic_multi("vehicle_torque_setpoint", 20, 2);

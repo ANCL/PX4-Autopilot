@@ -1,11 +1,12 @@
 // Shared, fixed-capacity trajectory plans for PX4 controllers.
 //
 // A selected plan contains absolute PX4 local NED start position and yaw.
-// The active controller snapshots the selected plan on an explicit run request.
+// The SE3 controller consumes explicit start requests from the trajectory CLI.
 
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "Sampler.hpp"
 
@@ -18,6 +19,7 @@ struct Plan
   Reference origin{};
   Sequence sequence{};
   float duration_s{0.0f};
+  uint32_t checksum{0}; // CRC32 of the loaded trajectory file.
 };
 
 // Text format version 2, produced by tools/trajectory_lib/compiler.py:
@@ -35,5 +37,18 @@ bool load_plan_file(const char *path, Plan &plan, const char *&error);
 // parsing and sampling never occur while the store is locked.
 bool store_plan(const Plan &plan);
 bool snapshot_plan(Plan &plan, unsigned *revision = nullptr);
+
+// A flight-mode-independent shell command cannot alter the active controller.
+// SE3 sets this permission while selected and holding (never while executing).
+// Clearing permission also cancels any pending start request.
+void set_se3_start_allowed(bool allowed);
+
+// Atomically install a validated plan and ask SE3 to execute it. Reject if
+// SE3 is not holding or a previous start has not yet been consumed.
+bool request_se3_start(const Plan &plan);
+
+// Called only by the SE3 work queue. Consumes the requested plan once, so
+// no previously selected plan can start automatically on mode entry.
+bool consume_start_request(Plan &plan);
 
 }  // namespace trajectory_generator

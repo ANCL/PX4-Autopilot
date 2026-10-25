@@ -21,6 +21,9 @@ pthread_mutex_t g_plan_mutex = PTHREAD_MUTEX_INITIALIZER;
 Plan g_loaded_plan{};
 bool g_has_plan{false};
 unsigned g_revision{0};
+// Handshake between the CLI and the SE3 work queue; guarded by g_plan_mutex.
+bool g_se3_start_allowed{false};
+bool g_start_pending{false};
 
 uint32_t checksum_line(uint32_t current, const char *line)
 {
@@ -182,6 +185,8 @@ bool load_plan_file(const char *path, Plan &plan, const char *&error)
       break;
     }
 
+    candidate.checksum = supplied_crc;
+
     // Disallow accidental appended commands/data after the fixed sequence.
     while (std::fgets(line, sizeof(line), file)) {
       if (!blank_tail(line)) {
@@ -232,6 +237,10 @@ bool store_plan(const Plan &plan)
   }
 
   pthread_mutex_lock(&g_plan_mutex);
+  if (g_start_pending) {
+    pthread_mutex_unlock(&g_plan_mutex);
+    return false;
+  }
   g_loaded_plan = plan;
   g_has_plan = true;
   ++g_revision;
@@ -251,6 +260,54 @@ bool snapshot_plan(Plan &plan, unsigned *revision)
 
   pthread_mutex_unlock(&g_plan_mutex);
   return loaded;
+}
+
+void set_se3_start_allowed(bool allowed)
+{
+  pthread_mutex_lock(&g_plan_mutex);
+  g_se3_start_allowed = allowed;
+
+  if (!allowed) {
+    g_start_pending = false;
+  }
+
+  pthread_mutex_unlock(&g_plan_mutex);
+}
+
+bool request_se3_start(const Plan &plan)
+{
+  if (!validate(plan.sequence) || !std::isfinite(plan.duration_s)) {
+    return false;
+  }
+
+  pthread_mutex_lock(&g_plan_mutex);
+  const bool accepted = g_se3_start_allowed && !g_start_pending;
+
+  if (accepted) {
+    // An unrelated 'trajectory select' cannot replace this pending request.
+    g_loaded_plan = plan;
+    g_has_plan = true;
+    ++g_revision;
+    g_start_pending = true;
+  }
+
+  pthread_mutex_unlock(&g_plan_mutex);
+  return accepted;
+}
+
+bool consume_start_request(Plan &plan)
+{
+  pthread_mutex_lock(&g_plan_mutex);
+  const bool accepted = g_se3_start_allowed && g_start_pending;
+
+  if (accepted) {
+    plan = g_loaded_plan;
+    g_start_pending = false;
+    g_se3_start_allowed = false;
+  }
+
+  pthread_mutex_unlock(&g_plan_mutex);
+  return accepted;
 }
 
 }  // namespace trajectory_generator

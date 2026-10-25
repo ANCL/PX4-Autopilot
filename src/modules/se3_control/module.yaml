@@ -6,8 +6,8 @@ parameters:
             description:
                 short: Allow experimental onboard SE3 control
                 long: |
-                    Disabled by default. For SITL validation only. The mode
-                    must be manually started and selected while airborne.
+                    Disabled by default. In SITL the mode registers at boot;
+                    selection requires a valid airborne handoff.
             type: int32
             min: 0
             max: 1

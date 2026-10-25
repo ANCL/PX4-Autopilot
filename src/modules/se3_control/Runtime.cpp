@@ -30,10 +30,13 @@
 #include <uORB/topics/unregister_ext_component.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_attitude_setpoint.h>
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_rates_setpoint.h>
+#include <uORB/topics/se3_trajectory_status.h>
+#include <uORB/topics/trajectory_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 
 #include <matrix/matrix/math.hpp>
@@ -47,14 +50,11 @@ using namespace time_literals;
 
 namespace
 {
-constexpr char kModeName[] = "Onboard SE3";
+constexpr char kModeName[] = "SE3";
 constexpr float kGravity = 9.80665f;
 constexpr hrt_abstime kPositionTimeout = 200_ms;
 constexpr hrt_abstime kAttitudeTimeout = 200_ms;
 constexpr hrt_abstime kGyroTimeout = 100_ms;
-// Maximum start-pose error allowed before trajectory execution.
-constexpr float kMaxStartDistanceM = 0.15f;
-constexpr float kMaxStartYawErrorRad = 0.20f;
 
 bool fresh(hrt_abstime now, hrt_abstime stamp, hrt_abstime limit)
 {
@@ -86,8 +86,8 @@ public:
     {
         vehicle_status_s status{};
 
-        if (!_status_sub.copy(&status) || status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
-            PX4_ERR("start only while disarmed with Commander running");
+        if (_status_sub.copy(&status) && status.arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+            PX4_ERR("SE3 registration requires a disarmed vehicle");
             return false;
         }
 
@@ -152,10 +152,6 @@ public:
             return instance->command_select();
         }
 
-        if (argc == 1 && std::strcmp(argv[0], "run") == 0) {
-            return instance->command_run();
-        }
-
         if (argc == 1 && std::strcmp(argv[0], "hold") == 0) {
             return instance->command_hold();
         }
@@ -169,13 +165,12 @@ public:
         PRINT_MODULE_DESCRIPTION(R"DESCR_STR(
 ### Description
 Experimental SE(3) geometric body-rate controller for an already-flying multicopter.
-Manual SITL startup only. Disabled unless SE3_ENABLE=1. No autonomous takeoff.
+Registered at SITL boot. Selection requires configured, valid airborne state. No autonomous takeoff.
 PX4 retains rate PID, allocator, and output/flight-safety ownership.
 )DESCR_STR");
         PRINT_MODULE_USAGE_NAME("se3_control", "controller");
         PRINT_MODULE_USAGE_COMMAND("start");
         PRINT_MODULE_USAGE_COMMAND("select");
-        PRINT_MODULE_USAGE_COMMAND("run");
         PRINT_MODULE_USAGE_COMMAND("hold");
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
@@ -218,38 +213,6 @@ private:
         return PX4_OK;
     }
 
-    int command_run()
-    {
-        if (!_active.load() || _executing.load() ||
-            _run_requested.load() || _hold_requested.load()) {
-            PX4_ERR("SE3 must be holding in its selected flight mode");
-            return PX4_ERROR;
-        }
-
-        trajectory_generator::Plan plan{};
-        unsigned revision = 0;
-
-        if (!trajectory_generator::snapshot_plan(plan, &revision)) {
-            PX4_ERR("no trajectory selected (use trajectory select <name>)");
-            return PX4_ERROR;
-        }
-
-        uORB::Subscription local_position{ORB_ID(vehicle_local_position)};
-        vehicle_local_position_s position{};
-
-        if (!local_position.copy(&position) ||
-            !start_matches(plan, position)) {
-            PX4_ERR("not at loaded absolute-NED trajectory start; staying in hold");
-            return PX4_ERROR;
-        }
-
-        // A later load cannot silently replace the plan already checked.
-        _run_revision.store(revision);
-        _run_requested.store(true);
-        PX4_INFO("trajectory start requested");
-        return PX4_OK;
-    }
-
     int command_hold()
     {
         if (!_active.load()) {
@@ -260,29 +223,6 @@ private:
         _hold_requested.store(true);
         PX4_INFO("SE3 current-position hold requested");
         return PX4_OK;
-    }
-
-    static bool start_matches(const trajectory_generator::Plan &plan,
-                              const vehicle_local_position_s &position)
-    {
-        if (!position.xy_valid || !position.z_valid ||
-            !position.v_xy_valid || !position.v_z_valid ||
-            !std::isfinite(position.x) || !std::isfinite(position.y) ||
-            !std::isfinite(position.z) || !std::isfinite(position.heading) ||
-            position.timestamp == 0 ||
-            !fresh(hrt_absolute_time(), position.timestamp, kPositionTimeout)) {
-            return false;
-        }
-
-        const float dx = position.x - plan.origin.position[0];
-        const float dy = position.y - plan.origin.position[1];
-        const float dz = position.z - plan.origin.position[2];
-        const float delta_yaw = position.heading - plan.origin.yaw;
-        const float yaw_error = std::atan2(std::sin(delta_yaw), std::cos(delta_yaw));
-
-        return dx * dx + dy * dy + dz * dz <=
-               kMaxStartDistanceM * kMaxStartDistanceM &&
-               std::fabs(yaw_error) <= kMaxStartYawErrorRad;
     }
 
     void capture_hold()
@@ -298,11 +238,13 @@ private:
         _start_time = hrt_absolute_time();
         _executing.store(false);
         _completed.store(false);
+        _active_plan_crc = 0;
     }
 
     void Run() override
     {
         if (should_exit()) {
+            trajectory_generator::set_se3_start_allowed(false);
             ScheduleClear();
             exit_and_cleanup();
             return;
@@ -376,10 +318,10 @@ private:
                               _control_mode.flag_control_allocation_enabled;
 
         if (!selected) {
+            trajectory_generator::set_se3_start_allowed(false);
             _active.store(false);
             _executing.store(false);
             _completed.store(false);
-            _run_requested.store(false);
             _hold_requested.store(false);
 
             // Keep faults latched until disarm, including after a mode change.
@@ -393,6 +335,7 @@ private:
         // Do not resume control just because a stale sample recovered or
         // the estimator briefly became valid again. Force a mode exit.
         if (!valid) {
+            trajectory_generator::set_se3_start_allowed(false);
             _active.store(false);
             _executing.store(false);
             _faulted = true;
@@ -401,9 +344,8 @@ private:
 
         if (!_active.load()) {
             // Mode entry is deliberately passive: capture the actual pose
-            // and hold it until a separate explicit run command arrives.
+            // and hold it until an explicit trajectory start arrives.
             capture_hold();
-            _run_requested.store(false);
             _hold_requested.store(false);
             _xy_reset_counter = _position.xy_reset_counter;
             _z_reset_counter = _position.z_reset_counter;
@@ -416,42 +358,44 @@ private:
         if (_xy_reset_counter != _position.xy_reset_counter ||
             _z_reset_counter != _position.z_reset_counter ||
             _quat_reset_counter != _attitude.quat_reset_counter) {
+            trajectory_generator::set_se3_start_allowed(false);
             _active.store(false);
             _executing.store(false);
             _faulted = true;
             return;
         }
 
-        // Process commands only on the controller work queue. A file may be
-        // loaded in Position mode without moving or starting this controller.
+        // Only the PX4 control work queue changes the active reference.
+        // The trajectory CLI validates and queues a plan atomically through
+        // the existing shared trajectory library; it cannot select a mode.
         bool pending = true;
 
         if (_hold_requested.compare_exchange(&pending, false)) {
-            _run_requested.store(false);
+            trajectory_generator::set_se3_start_allowed(false);
             capture_hold();
         }
 
-        pending = true;
+        trajectory_generator::Plan plan{};
 
-        if (_run_requested.compare_exchange(&pending, false)) {
-            trajectory_generator::Plan plan{};
-            unsigned revision = 0;
-
-            if (trajectory_generator::snapshot_plan(plan, &revision) &&
-                revision == _run_revision.load() && start_matches(plan, _position)) {
-                _origin = plan.origin;
-                _sequence = plan.sequence;
-                _duration_s = plan.duration_s;
-                _start_time = hrt_absolute_time();
-                _executing.store(true);
-                _completed.store(false);
-                PX4_INFO("SE3 trajectory started (%u segments)",
-                         static_cast<unsigned>(_sequence.count));
-
-            } else {
-                PX4_WARN("trajectory start rejected; SE3 remains in hold");
-            }
+        if (trajectory_generator::consume_start_request(plan)) {
+            // Explicit pilot request. Deliberately do not compare the current
+            // position or yaw with the plan origin, and do not reposition first.
+            _origin = plan.origin;
+            _sequence = plan.sequence;
+            _duration_s = plan.duration_s;
+            _active_plan_crc = plan.checksum;
+            ++_run_id;
+            _start_time = hrt_absolute_time();
+            _executing.store(true);
+            _completed.store(false);
+            PX4_INFO("SE3 trajectory started (%u segments)",
+                     static_cast<unsigned>(_sequence.count));
         }
+
+        // Completion makes the existing sampler hold the final reference.
+        // A new start can be requested only once SE3 is holding again.
+        trajectory_generator::set_se3_start_allowed(
+            !_executing.load() && !_hold_requested.load());
 
         const float elapsed_s =
             static_cast<float>(hrt_absolute_time() - _start_time) * 1.0e-6f;
@@ -460,6 +404,7 @@ private:
         if (!trajectory_generator::sample(_sequence, elapsed_s, _origin, reference)) {
             _active.store(false);
             _executing.store(false);
+            trajectory_generator::set_se3_start_allowed(false);
             _faulted = true;
             return;
         }
@@ -493,6 +438,7 @@ private:
             !se3_control::AttitudeLaws::body_rate(state, geometric.desired_attitude, attitude_gains, body_rate)) {
             _active.store(false);
             _executing.store(false);
+            trajectory_generator::set_se3_start_allowed(false);
             _faulted = true;
             return;
         }
@@ -504,6 +450,7 @@ private:
         if (!std::isfinite(thrust) || !body_rate.isAllFinite() || !std::isfinite(rate_limit)) {
             _active.store(false);
             _executing.store(false);
+            trajectory_generator::set_se3_start_allowed(false);
             _faulted = true;
             return;
         }
@@ -517,6 +464,59 @@ private:
         setpoint.thrust_body[1] = 0.f;
         setpoint.thrust_body[2] = -std::min(std::max(thrust, 0.0f), 1.0f);
         _rate_setpoint_pub.publish(setpoint);
+
+        // Expose the exact geometric attitude reference through the standard
+        // PX4 observation topic. SE3 still owns body-rate control: Commander
+        // keeps mc_att_control disabled in this external flight mode.
+        // Rotation maps body FRD to world NED, matching PX4 q_d convention.
+        const matrix::Quatf desired_quaternion{geometric.desired_attitude.attitude};
+        vehicle_attitude_setpoint_s attitude_sp{};
+        attitude_sp.timestamp = setpoint.timestamp;
+        for (int component = 0; component < 4; ++component) {
+            attitude_sp.q_d[component] = desired_quaternion(component);
+        }
+        attitude_sp.yaw_sp_move_rate = reference.yaw_rate;
+        for (int axis = 0; axis < 3; ++axis) {
+            attitude_sp.thrust_body[axis] = setpoint.thrust_body[axis];
+        }
+        _attitude_setpoint_pub.publish(attitude_sp);
+
+        // Record the exact reference sent to the geometric controller.
+        se3_trajectory_status_s record{};
+        record.timestamp = setpoint.timestamp;
+        record.run_id = _run_id;
+        record.plan_crc32 = _active_plan_crc;
+        record.phase = _completed.load() ? se3_trajectory_status_s::PHASE_COMPLETED :
+                       (_executing.load() ? se3_trajectory_status_s::PHASE_RUNNING :
+                                            se3_trajectory_status_s::PHASE_HOLD);
+        record.elapsed_s = _active_plan_crc > 0 ? std::min(elapsed_s, _duration_s) : 0.0f;
+        for (int axis = 0; axis < 3; ++axis) {
+            record.position[axis] = reference.position[axis];
+            record.velocity[axis] = reference.velocity[axis];
+            record.acceleration[axis] = reference.acceleration[axis];
+            record.jerk[axis] = reference.jerk[axis];
+            record.snap[axis] = reference.snap[axis];
+        }
+        record.yaw = reference.yaw;
+        record.yaw_rate = reference.yaw_rate;
+        record.yaw_acceleration = reference.yaw_acceleration;
+        // Publish the same reference used for SE3 control on PX4's standard
+        // trajectory topic. The FlightModeManager has no flight task in an
+        // external mode; mc_pos_control remains disabled by Commander.
+        // No controller state, arm state, or trajectory lifecycle is changed.
+        trajectory_setpoint_s trajectory_sp{};
+        trajectory_sp.timestamp = record.timestamp;
+        for (int axis = 0; axis < 3; ++axis) {
+            trajectory_sp.position[axis] = reference.position[axis];
+            trajectory_sp.velocity[axis] = reference.velocity[axis];
+            trajectory_sp.acceleration[axis] = reference.acceleration[axis];
+            trajectory_sp.jerk[axis] = reference.jerk[axis];
+        }
+        trajectory_sp.yaw = reference.yaw;
+        trajectory_sp.yawspeed = reference.yaw_rate;
+        _trajectory_pub.publish(trajectory_sp);
+
+        _trajectory_status_pub.publish(record);
     }
 
     bool ready() const
@@ -578,7 +578,10 @@ private:
     uORB::Subscription _attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _gyro_sub{ORB_ID(vehicle_angular_velocity)};
     uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+    uORB::Publication<vehicle_attitude_setpoint_s> _attitude_setpoint_pub{ORB_ID(vehicle_attitude_setpoint)};
     uORB::Publication<vehicle_rates_setpoint_s> _rate_setpoint_pub{ORB_ID(vehicle_rates_setpoint)};
+    uORB::Publication<se3_trajectory_status_s> _trajectory_status_pub{ORB_ID(se3_trajectory_status)};
+    uORB::Publication<trajectory_setpoint_s> _trajectory_pub{ORB_ID(trajectory_setpoint)};
 
     vehicle_status_s _status{};
     vehicle_control_mode_s _control_mode{};
@@ -599,14 +602,14 @@ private:
     uint8_t _z_reset_counter{0};
     uint8_t _quat_reset_counter{0};
     float _duration_s{0.0f};
+    uint32_t _run_id{0};
+    uint32_t _active_plan_crc{0};
     px4::atomic_int32_t _registered_mode_id{-1};
     uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)};
     px4::atomic_bool _active{false};
     px4::atomic_bool _executing{false};
     px4::atomic_bool _completed{false};
-    px4::atomic_bool _run_requested{false};
     px4::atomic_bool _hold_requested{false};
-    px4::atomic<uint32_t> _run_revision{0};
 
     DEFINE_PARAMETERS(
         (ParamInt<px4::params::SE3_ENABLE>) _param_enable,
