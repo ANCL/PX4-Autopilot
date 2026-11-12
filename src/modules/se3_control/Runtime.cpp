@@ -165,7 +165,7 @@ public:
         PRINT_MODULE_DESCRIPTION(R"DESCR_STR(
 ### Description
 Experimental SE(3) geometric body-rate controller for an already-flying multicopter.
-Registered at SITL boot. Selection requires configured, valid airborne state. No autonomous takeoff.
+Registered at boot on supported targets. Selection requires valid airborne state. No autonomous takeoff.
 PX4 retains rate PID, allocator, and output/flight-safety ownership.
 )DESCR_STR");
         PRINT_MODULE_USAGE_NAME("se3_control", "controller");
@@ -422,11 +422,12 @@ private:
         const matrix::Quatf quat{_attitude.q};
         state.attitude = matrix::Dcmf{quat};
 
-        const float mass = _param_mass.get();
+        // Unit mass is sufficient here: physical mass cancels from the
+        // desired attitude, body rates and normalized collective thrust.
         se3_control::TranslationGains translation_gains{};
-        translation_gains.mass = mass;
-        translation_gains.position = mass * _param_kx.get();
-        translation_gains.velocity = mass * _param_kv.get();
+        translation_gains.mass = 1.0f;
+        translation_gains.position = _param_kx.get();
+        translation_gains.velocity = _param_kv.get();
 
         se3_control::GeometricOutput geometric{};
         se3_control::Vector3 body_rate{};
@@ -444,7 +445,7 @@ private:
         }
 
         // Convert collective thrust to the normalized PX4 body-z convention.
-        const float thrust = _param_hover.get() * geometric.collective_thrust_n / (mass * kGravity);
+        const float thrust = _param_hover.get() * geometric.collective_thrust_n / kGravity;
         const float rate_limit = _param_rate_max.get();
 
         if (!std::isfinite(thrust) || !body_rate.isAllFinite() || !std::isfinite(rate_limit)) {
@@ -542,13 +543,11 @@ private:
                                 std::isfinite(_gyro.xyz[2]);
         const bool supported_airframe = _param_autostart.get() != 6010 && _param_autostart.get() != 6002;
         const bool configured = _param_enable.get() == 1 &&
-                                _param_mass.get() > 0.0f &&
                                 _param_kx.get() > 0.0f && _param_kv.get() > 0.0f &&
                                 _param_krx.get() > 0.0f && _param_kry.get() > 0.0f &&
                                 _param_krz.get() > 0.0f &&
                                 _param_rate_max.get() > 0.0f &&
                                 _param_hover.get() > 0.0f && _param_hover.get() < 1.0f &&
-                                std::isfinite(_param_mass.get()) &&
                                 std::isfinite(_param_kx.get()) && std::isfinite(_param_kv.get()) &&
                                 std::isfinite(_param_krx.get()) && std::isfinite(_param_kry.get()) &&
                                 std::isfinite(_param_krz.get()) &&
@@ -614,7 +613,6 @@ private:
 
     DEFINE_PARAMETERS(
         (ParamInt<px4::params::SE3_ENABLE>) _param_enable,
-        (ParamFloat<px4::params::SE3_MASS>) _param_mass,
         (ParamFloat<px4::params::SE3_KX>) _param_kx,
         (ParamFloat<px4::params::SE3_KV>) _param_kv,
         (ParamFloat<px4::params::SE3_KRX>) _param_krx,

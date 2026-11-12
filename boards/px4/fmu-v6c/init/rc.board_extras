@@ -1,0 +1,3 @@
+#!/bin/sh
+# Register native SE3 at boot without selecting it or starting a trajectory.
+se3_control start
