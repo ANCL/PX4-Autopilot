@@ -366,8 +366,8 @@ private:
         }
 
         // Only the PX4 control work queue changes the active reference.
-        // The trajectory CLI validates and queues a plan atomically through
-        // the existing shared trajectory library; it cannot select a mode.
+        // The trajectory CLI queues a builtin name, not a file or full plan.
+        // Only the SE3 work queue constructs and activates its snapshot.
         bool pending = true;
 
         if (_hold_requested.compare_exchange(&pending, false)) {
