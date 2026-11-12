@@ -55,3 +55,220 @@ parameters:
             min: 0.1
             max: 12.0
             default: 3.0
+    - group: Native Trajectory
+      definitions:
+        TRJ_HOME_X:
+            description:
+                short: Absolute local NED reference start X
+            type: float
+            unit: m
+            min: -10
+            max: 10
+            default: 0.0
+        TRJ_HOME_Y:
+            description:
+                short: Absolute local NED reference start Y
+            type: float
+            unit: m
+            min: -10
+            max: 10
+            default: 0.0
+        TRJ_HOME_Z:
+            description:
+                short: Absolute local NED reference start Z
+            type: float
+            unit: m
+            min: -10
+            max: 0
+            default: -1.0
+        TRJ_HOME_YAW:
+            description:
+                short: Absolute local NED reference start yaw
+            type: float
+            unit: rad
+            min: -6.28319
+            max: 6.28319
+            default: 0.0
+        TRJ_STEP_X:
+            description:
+                short: X step offset from reference origin
+            type: float
+            unit: m
+            min: 0.01
+            max: 10
+            default: 1.0
+        TRJ_STEP_Y:
+            description:
+                short: Y step offset from reference origin
+            type: float
+            unit: m
+            min: 0.01
+            max: 10
+            default: 1.0
+        TRJ_LINE_X:
+            description:
+                short: X line offset from reference origin
+            type: float
+            unit: m
+            min: 0.01
+            max: 10
+            default: 0.5
+        TRJ_LINE_Y:
+            description:
+                short: Y line offset from reference origin
+            type: float
+            unit: m
+            min: 0.01
+            max: 10
+            default: 0.5
+        TRJ_LINE_DZ:
+            description:
+                short: Z line offset from reference origin
+            type: float
+            unit: m
+            min: -5
+            max: 5
+            default: -0.25
+        TRJ_CIR05_R:
+            description:
+                short: Smaller circle radius
+            type: float
+            unit: m
+            min: 0.05
+            max: 5
+            default: 0.5
+        TRJ_CIR10_R:
+            description:
+                short: Larger circle radius
+            type: float
+            unit: m
+            min: 0.05
+            max: 5
+            default: 1.0
+        TRJ_HELIX_R:
+            description:
+                short: Helix radius
+            type: float
+            unit: m
+            min: 0.05
+            max: 5
+            default: 1.0
+        TRJ_HELIX_H:
+            description:
+                short: Helix signed height change in NED
+            type: float
+            unit: m
+            min: -5
+            max: 5
+            default: -0.5
+        TRJ_F8_AX:
+            description:
+                short: Figure-eight X amplitude
+            type: float
+            unit: m
+            min: 0.01
+            max: 5
+            default: 0.75
+        TRJ_F8_AY:
+            description:
+                short: Figure-eight Y amplitude
+            type: float
+            unit: m
+            min: 0.01
+            max: 5
+            default: 1.2
+        TRJ_YAW_ANG:
+            description:
+                short: Yaw-sweep relative angle
+            type: float
+            unit: rad
+            min: 0.01
+            max: 6.28319
+            default: 1.57079632679
+        TRJ_HOVER_T:
+            description:
+                short: Hover duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 10.0
+        TRJ_HOLD_T:
+            description:
+                short: Standard hold duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 2.0
+        TRJ_STEP_T:
+            description:
+                short: Step dwell duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 4.0
+        TRJ_LINE_T:
+            description:
+                short: Line duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 4.0
+        TRJ_RETURN_T:
+            description:
+                short: Standard return-to-origin line duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 5.0
+        TRJ_CIR05_T:
+            description:
+                short: Smaller circle duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 12.0
+        TRJ_CIR10_T:
+            description:
+                short: Larger circle duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 20.0
+        TRJ_F8_T:
+            description:
+                short: Figure-eight duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 60.0
+        TRJ_HELIX_T:
+            description:
+                short: Helix duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 20.0
+        TRJ_YAW_T:
+            description:
+                short: Yaw-sweep duration
+            type: float
+            unit: s
+            min: 0.1
+            max: 600
+            default: 4.0
+        TRJ_TURNS:
+            description:
+                short: Turns per circle helix or figure eight
+            type: int32
+            min: 1
+            max: 10
+            default: 3

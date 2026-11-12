@@ -9,8 +9,7 @@
 #include "AttitudeLaws.hpp"
 #include "Controller.hpp"
 
-#include <trajectory/Sampler.hpp>
-#include <trajectory/Plan.hpp>
+#include <trajectory/Trajectory.hpp>
 #include <px4_platform_common/atomic.h>
 #include <uORB/topics/vehicle_command.h>
 
@@ -41,8 +40,8 @@
 
 #include <matrix/matrix/math.hpp>
 
-// #include <algorithm>
 #include <cmath>
+#include <pthread.h>
 #include <cstdint>
 #include <cstring>
 
@@ -156,6 +155,10 @@ public:
             return instance->command_hold();
         }
 
+        if (argc == 2 && std::strcmp(argv[0], "trajectory") == 0) {
+            return instance->command_trajectory(argv[1]);
+        }
+
         return print_usage("unknown command");
     }
 
@@ -172,6 +175,7 @@ PX4 retains rate PID, allocator, and output/flight-safety ownership.
         PRINT_MODULE_USAGE_COMMAND("start");
         PRINT_MODULE_USAGE_COMMAND("select");
         PRINT_MODULE_USAGE_COMMAND("hold");
+        PRINT_MODULE_USAGE_COMMAND("trajectory");
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
     }
@@ -225,6 +229,55 @@ private:
         return PX4_OK;
     }
 
+    // The shell supplies a named trajectory and a parameter snapshot.
+    // Only the SE3 work queue changes the active reference.
+    int command_trajectory(const char *name)
+    {
+        const int index = trajectory_generator::trajectory_index(name);
+
+        if (index < 0) {
+            PX4_ERR("unknown trajectory: %s", name);
+            return PX4_ERROR;
+        }
+
+        if (!_active.load() || _executing.load() || _hold_requested.load()) {
+            PX4_ERR("SE3 must be active and holding");
+            return PX4_ERROR;
+        }
+
+        trajectory_generator::Settings settings{};
+        if (!trajectory_generator::load_settings(settings)) {
+            PX4_ERR("invalid trajectory parameters");
+            return PX4_ERROR;
+        }
+
+        pthread_mutex_lock(&_trajectory_mutex);
+        const bool accepted = _requested_trajectory < 0 && _active.load() &&
+                              !_executing.load() && !_hold_requested.load();
+
+        if (accepted) {
+            _requested_settings = settings;
+            _requested_trajectory = index;
+        }
+
+        pthread_mutex_unlock(&_trajectory_mutex);
+
+        if (!accepted) {
+            PX4_ERR("SE3 is busy");
+            return PX4_ERROR;
+        }
+
+        PX4_INFO("trajectory requested: %s", name);
+        return PX4_OK;
+    }
+
+    void clear_trajectory_request()
+    {
+        pthread_mutex_lock(&_trajectory_mutex);
+        _requested_trajectory = -1;
+        pthread_mutex_unlock(&_trajectory_mutex);
+    }
+
     void capture_hold()
     {
         // Initialize a stationary reference at the measured local pose.
@@ -244,7 +297,7 @@ private:
     void Run() override
     {
         if (should_exit()) {
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             ScheduleClear();
             exit_and_cleanup();
             return;
@@ -318,7 +371,7 @@ private:
                               _control_mode.flag_control_allocation_enabled;
 
         if (!selected) {
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _active.store(false);
             _executing.store(false);
             _completed.store(false);
@@ -335,7 +388,7 @@ private:
         // Do not resume control just because a stale sample recovered or
         // the estimator briefly became valid again. Force a mode exit.
         if (!valid) {
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _active.store(false);
             _executing.store(false);
             _faulted = true;
@@ -358,44 +411,49 @@ private:
         if (_xy_reset_counter != _position.xy_reset_counter ||
             _z_reset_counter != _position.z_reset_counter ||
             _quat_reset_counter != _attitude.quat_reset_counter) {
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _active.store(false);
             _executing.store(false);
             _faulted = true;
             return;
         }
 
-        // Only the PX4 control work queue changes the active reference.
-        // The trajectory CLI queues a builtin name, not a file or full plan.
-        // Only the SE3 work queue constructs and activates its snapshot.
-        bool pending = true;
-
-        if (_hold_requested.compare_exchange(&pending, false)) {
-            trajectory_generator::set_se3_start_allowed(false);
+        bool hold_requested = true;
+        if (_hold_requested.compare_exchange(&hold_requested, false)) {
+            clear_trajectory_request();
             capture_hold();
         }
 
-        trajectory_generator::Plan &plan = _pending_plan;
+        int requested_index = -1;
+        trajectory_generator::Settings settings{};
+        pthread_mutex_lock(&_trajectory_mutex);
 
-        if (trajectory_generator::consume_start_request(plan)) {
-            // Explicit pilot request. Deliberately do not compare the current
-            // position or yaw with the plan origin, and do not reposition first.
-            _origin = plan.origin;
-            _sequence = plan.sequence;
-            _duration_s = plan.duration_s;
-            _active_plan_crc = plan.checksum;
-            ++_run_id;
-            _start_time = hrt_absolute_time();
-            _executing.store(true);
-            _completed.store(false);
-            PX4_INFO("SE3 trajectory started (%u segments)",
-                     static_cast<unsigned>(_sequence.count));
+        if (_requested_trajectory >= 0 && !_executing.load()) {
+            requested_index = _requested_trajectory;
+            settings = _requested_settings;
+            _requested_trajectory = -1;
         }
 
-        // Completion makes the existing sampler hold the final reference.
-        // A new start can be requested only once SE3 is holding again.
-        trajectory_generator::set_se3_start_allowed(
-            !_executing.load() && !_hold_requested.load());
+        pthread_mutex_unlock(&_trajectory_mutex);
+
+        if (requested_index >= 0) {
+            // The selected reference is absolute NED; no pose alignment occurs.
+            auto &trajectory = _next_trajectory;
+            if (!trajectory_generator::build_trajectory(requested_index, settings, trajectory)) {
+                PX4_ERR("invalid trajectory definition");
+            } else {
+                _origin = trajectory.origin;
+                _sequence = trajectory.sequence;
+                _duration_s = trajectory.duration_s;
+                _active_plan_crc = trajectory.checksum;
+                ++_run_id;
+                _start_time = hrt_absolute_time();
+                _executing.store(true);
+                _completed.store(false);
+                PX4_INFO("SE3 trajectory started (%u segments)",
+                         static_cast<unsigned>(_sequence.count));
+            }
+        }
 
         const float elapsed_s =
             static_cast<float>(hrt_absolute_time() - _start_time) * 1.0e-6f;
@@ -404,7 +462,7 @@ private:
         if (!trajectory_generator::sample(_sequence, elapsed_s, _origin, reference)) {
             _active.store(false);
             _executing.store(false);
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _faulted = true;
             return;
         }
@@ -439,7 +497,7 @@ private:
             !se3_control::AttitudeLaws::body_rate(state, geometric.desired_attitude, attitude_gains, body_rate)) {
             _active.store(false);
             _executing.store(false);
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _faulted = true;
             return;
         }
@@ -451,7 +509,7 @@ private:
         if (!std::isfinite(thrust) || !body_rate.isAllFinite() || !std::isfinite(rate_limit)) {
             _active.store(false);
             _executing.store(false);
-            trajectory_generator::set_se3_start_allowed(false);
+            clear_trajectory_request();
             _faulted = true;
             return;
         }
@@ -593,7 +651,10 @@ private:
 
     trajectory_generator::Reference _origin{};
     trajectory_generator::Sequence _sequence{};
-    trajectory_generator::Plan _pending_plan{};
+    trajectory_generator::Trajectory _next_trajectory{};
+    pthread_mutex_t _trajectory_mutex = PTHREAD_MUTEX_INITIALIZER;
+    trajectory_generator::Settings _requested_settings{};
+    int _requested_trajectory{-1};
     hrt_abstime _start_time{0};
     uint64_t _registration_request_id{0};
     int8_t _mode_id{-1};

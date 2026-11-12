@@ -1,14 +1,11 @@
-// Fixed onboard trajectory definitions, shared by the command and SE3.
-//
-// Offboard ROS 2 retains its own YAML configuration. These native defaults
-// need no microSD plan files and can later be overridden by PX4 parameters.
-// Each preset starts and finishes at [0, 0, -1] local NED and yaw zero.
+// Named trajectories in PX4 local NED. Parameters determine geometry and timing.
 
-#include "Catalog.hpp"
+#include "Trajectory.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <parameters/param.h>
 
 namespace trajectory_generator
 {
@@ -20,16 +17,31 @@ constexpr char const *kNames[] = {
   "circle_r05", "circle_r10", "figure_eight_tracking", "helix_r10",
   "yaw_sweep", "full_excitation"
 };
+enum class TrajectoryId : int {
+  Hover,
+  StepX,
+  StepY,
+  LineX,
+  LineY,
+  LineZ,
+  Circle05,
+  Circle10,
+  FigureEight,
+  Helix,
+  Yaw,
+  FullExcitation
+};
+
 constexpr std::size_t kCount = sizeof(kNames) / sizeof(kNames[0]);
-constexpr float kHomeZ = -1.0f;
-constexpr float kYaw90 = 1.5707963267948966f;
+static_assert(kCount == 12, "trajectory names must match TrajectoryId");
+static_assert(kMaxSegments >= 15, "increase sequence capacity for the largest preset");
 
 Vector3 position(float x, float y, float z)
 {
   return {{x, y, z}};
 }
 
-Segment &append(Plan &plan, Segment::Type type, float duration_s)
+Segment &append(Trajectory &plan, Segment::Type type, float duration_s)
 {
   Segment &segment = plan.sequence.segments[plan.sequence.count++];
   segment = Segment{};
@@ -39,12 +51,12 @@ Segment &append(Plan &plan, Segment::Type type, float duration_s)
   return segment;
 }
 
-void hold(Plan &plan, float duration_s)
+void hold(Trajectory &plan, float duration_s)
 {
   append(plan, Segment::Type::Hold, duration_s);
 }
 
-void move_to(Plan &plan, Segment::Type type, float duration_s,
+void move_to(Trajectory &plan, Segment::Type type, float duration_s,
              const Vector3 &target, Vector3 &cursor)
 {
   Segment &segment = append(plan, type, duration_s);
@@ -53,31 +65,31 @@ void move_to(Plan &plan, Segment::Type type, float duration_s,
   cursor = target;
 }
 
-void line(Plan &plan, float seconds, const Vector3 &target, Vector3 &cursor)
+void line(Trajectory &plan, float seconds, const Vector3 &target, Vector3 &cursor)
 {
   move_to(plan, Segment::Type::Line, seconds, target, cursor);
 }
 
-void step(Plan &plan, float seconds, const Vector3 &target, Vector3 &cursor)
+void step(Trajectory &plan, float seconds, const Vector3 &target, Vector3 &cursor)
 {
   move_to(plan, Segment::Type::Step, seconds, target, cursor);
 }
 
-void yaw_to(Plan &plan, float seconds, float target, float &heading)
+void yaw_to(Trajectory &plan, float seconds, float target, float &heading)
 {
   Segment &segment = append(plan, Segment::Type::Yaw, seconds);
   segment.yaw_offset_rad = target - heading;
   heading = target;
 }
 
-void circle(Plan &plan, float seconds, float radius, float turns)
+void circle(Trajectory &plan, float seconds, float radius, float turns)
 {
   Segment &segment = append(plan, Segment::Type::Circle, seconds);
   segment.radius_m = radius;
   segment.turns = turns;
 }
 
-void helix(Plan &plan, float seconds, float radius, float turns, float height)
+void helix(Trajectory &plan, float seconds, float radius, float turns, float height)
 {
   Segment &segment = append(plan, Segment::Type::Helix, seconds);
   segment.radius_m = radius;
@@ -85,17 +97,17 @@ void helix(Plan &plan, float seconds, float radius, float turns, float height)
   segment.height_m = height;
 }
 
-void figure_eight(Plan &plan)
+void figure_eight(Trajectory &plan, const Settings &settings)
 {
-  Segment &segment = append(plan, Segment::Type::FigureEight, 60.0f);
-  segment.x_amplitude_m = 0.75f;
-  segment.y_amplitude_m = 1.2f;
-  segment.turns = 3.0f;
+  Segment &segment = append(plan, Segment::Type::FigureEight, settings.figure_s);
+  segment.x_amplitude_m = settings.figure_x;
+  segment.y_amplitude_m = settings.figure_y;
+  segment.turns = static_cast<float>(settings.turns);
 }
 
-void return_home(Plan &plan, Vector3 &cursor)
+void return_home(Trajectory &plan, Vector3 &cursor, const Settings &settings)
 {
-  line(plan, 5.0f, position(0.0f, 0.0f, kHomeZ), cursor);
+  line(plan, settings.return_s, plan.origin.position, cursor);
 }
 
 // CRC32 covers explicitly serialized effective fields, never padding or files.
@@ -122,13 +134,10 @@ void crc_float(uint32_t &crc, float value)
   crc_word(crc, bits);
 }
 
-uint32_t fingerprint(const Plan &plan)
+uint32_t fingerprint(const Trajectory &plan)
 {
   uint32_t crc = 0xFFFFFFFFU;
-  for (const char *p = plan.name; *p; ++p) {
-    crc_byte(crc, static_cast<uint8_t>(*p));
-  }
-  crc_byte(crc, 0);
+  crc_word(crc, static_cast<uint32_t>(plan.id));
   for (int i = 0; i < 3; ++i) {
     crc_float(crc, plan.origin.position[i]);
   }
@@ -152,7 +161,7 @@ uint32_t fingerprint(const Plan &plan)
   return crc ^ 0xFFFFFFFFU;
 }
 
-bool closed(const Plan &plan)
+bool closed(const Trajectory &plan)
 {
   Reference beginning{};
   Reference ending{};
@@ -172,17 +181,59 @@ bool closed(const Plan &plan)
 
 } // namespace
 
-std::size_t builtin_plan_count()
+bool load_settings(Settings &settings)
 {
-  return kCount;
+  Settings candidate{};
+  struct Field { const char *name; float *value; };
+  const Field fields[] = {
+    {"TRJ_HOME_X", &candidate.home_x},
+    {"TRJ_HOME_Y", &candidate.home_y},
+    {"TRJ_HOME_Z", &candidate.home_z},
+    {"TRJ_HOME_YAW", &candidate.home_yaw},
+    {"TRJ_STEP_X", &candidate.step_x},
+    {"TRJ_STEP_Y", &candidate.step_y},
+    {"TRJ_LINE_X", &candidate.line_x},
+    {"TRJ_LINE_Y", &candidate.line_y},
+    {"TRJ_LINE_DZ", &candidate.line_dz},
+    {"TRJ_CIR05_R", &candidate.circle_r05},
+    {"TRJ_CIR10_R", &candidate.circle_r10},
+    {"TRJ_HELIX_R", &candidate.helix_radius},
+    {"TRJ_HELIX_H", &candidate.helix_height},
+    {"TRJ_F8_AX", &candidate.figure_x},
+    {"TRJ_F8_AY", &candidate.figure_y},
+    {"TRJ_YAW_ANG", &candidate.yaw_sweep},
+    {"TRJ_HOVER_T", &candidate.hover_s},
+    {"TRJ_HOLD_T", &candidate.hold_s},
+    {"TRJ_STEP_T", &candidate.step_s},
+    {"TRJ_LINE_T", &candidate.line_s},
+    {"TRJ_RETURN_T", &candidate.return_s},
+    {"TRJ_CIR05_T", &candidate.circle05_s},
+    {"TRJ_CIR10_T", &candidate.circle10_s},
+    {"TRJ_F8_T", &candidate.figure_s},
+    {"TRJ_HELIX_T", &candidate.helix_s},
+    {"TRJ_YAW_T", &candidate.yaw_s},
+  };
+
+  for (const Field &field : fields) {
+    const param_t handle = param_find(field.name);
+    if (handle == PARAM_INVALID || param_get(handle, field.value) != 0 ||
+        !std::isfinite(*field.value)) {
+      return false;
+    }
+  }
+
+  const param_t turns_param = param_find("TRJ_TURNS");
+  if (turns_param == PARAM_INVALID ||
+      param_get(turns_param, &candidate.turns) != 0 ||
+      candidate.turns < 1 || candidate.turns > 10) {
+    return false;
+  }
+
+  settings = candidate;
+  return true;
 }
 
-const char *builtin_plan_name(std::size_t index)
-{
-  return index < kCount ? kNames[index] : nullptr;
-}
-
-int builtin_plan_index(const char *name)
+int trajectory_index(const char *name)
 {
   if (name) {
     for (std::size_t i = 0; i < kCount; ++i) {
@@ -194,111 +245,132 @@ int builtin_plan_index(const char *name)
   return -1;
 }
 
-bool build_builtin_plan(int index, Plan &plan)
+bool build_trajectory(int index, const Settings &settings, Trajectory &plan)
 {
   if (index < 0 || static_cast<std::size_t>(index) >= kCount) {
     return false;
   }
 
+  const float durations[] = {settings.hover_s, settings.hold_s, settings.step_s,
+                             settings.line_s, settings.return_s, settings.circle05_s,
+                             settings.circle10_s, settings.figure_s,
+                             settings.helix_s, settings.yaw_s};
+  for (const float value : durations) {
+    if (!std::isfinite(value) || value < 0.01f) {
+      return false;
+    }
+  }
+  if (settings.turns < 1 || settings.turns > 10 ||
+      !(settings.step_x > 0.0f && settings.step_y > 0.0f &&
+        settings.line_x > 0.0f && settings.line_y > 0.0f &&
+        settings.circle_r05 > 0.0f && settings.circle_r10 > 0.0f &&
+        settings.helix_radius > 0.0f && settings.figure_x > 0.0f &&
+        settings.figure_y > 0.0f)) {
+    return false;
+  }
+
   plan.origin = {};
-  plan.origin.position = position(0.0f, 0.0f, kHomeZ);
-  plan.origin.yaw = 0.0f;
+  plan.origin.position = position(settings.home_x, settings.home_y, settings.home_z);
+  plan.origin.yaw = settings.home_yaw;
   plan.sequence.count = 0;
   plan.duration_s = 0.0f;
   plan.checksum = 0;
-  std::strncpy(plan.name, kNames[index], sizeof(plan.name) - 1);
-  plan.name[sizeof(plan.name) - 1] = '\0';
+  plan.id = index;
 
   Vector3 cursor = plan.origin.position;
   float heading = plan.origin.yaw;
   const Vector3 home = plan.origin.position;
+  const float x = settings.home_x;
+  const float y = settings.home_y;
+  const float z = settings.home_z;
+  const float turns = static_cast<float>(settings.turns);
 
-  switch (index) {
-  case 0: // hover
-    hold(plan, 10.0f);
+  switch (static_cast<TrajectoryId>(index)) {
+  case TrajectoryId::Hover:
+    hold(plan, settings.hover_s);
     break;
-  case 1: // step_x
-    hold(plan, 2.0f);
-    step(plan, 4.0f, position(1.0f, 0.0f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    hold(plan, 2.0f);
+  case TrajectoryId::StepX:
+    hold(plan, settings.hold_s);
+    step(plan, settings.step_s, position(x + settings.step_x, y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    hold(plan, settings.hold_s);
     break;
-  case 2: // step_y
-    hold(plan, 2.0f);
-    step(plan, 4.0f, position(0.0f, 1.0f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    hold(plan, 2.0f);
+  case TrajectoryId::StepY:
+    hold(plan, settings.hold_s);
+    step(plan, settings.step_s, position(x, y + settings.step_y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    hold(plan, settings.hold_s);
     break;
-  case 3: // line_x
-    hold(plan, 2.0f);
-    line(plan, 4.0f, position(0.5f, 0.0f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    hold(plan, 2.0f);
+  case TrajectoryId::LineX:
+    hold(plan, settings.hold_s);
+    line(plan, settings.line_s, position(x + settings.line_x, y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    hold(plan, settings.hold_s);
     break;
-  case 4: // line_y
-    hold(plan, 2.0f);
-    line(plan, 4.0f, position(0.0f, 0.5f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    hold(plan, 2.0f);
+  case TrajectoryId::LineY:
+    hold(plan, settings.hold_s);
+    line(plan, settings.line_s, position(x, y + settings.line_y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    hold(plan, settings.hold_s);
     break;
-  case 5: // line_z
-    hold(plan, 2.0f);
-    line(plan, 4.0f, position(0.0f, 0.0f, -1.25f), cursor);
-    hold(plan, 2.0f);
-    line(plan, 4.0f, home, cursor);
-    hold(plan, 2.0f);
+  case TrajectoryId::LineZ:
+    hold(plan, settings.hold_s);
+    line(plan, settings.line_s, position(x, y, z + settings.line_dz), cursor);
+    hold(plan, settings.hold_s);
+    line(plan, settings.line_s, home, cursor);
+    hold(plan, settings.hold_s);
     break;
-  case 6: // circle_r05
-  case 7: // circle_r10
+  case TrajectoryId::Circle05:
+  case TrajectoryId::Circle10:
   {
-    const float radius = index == 6 ? 0.5f : 1.0f;
-    hold(plan, 2.0f);
-    line(plan, index == 6 ? 5.0f : 10.0f, position(radius, 0.0f, kHomeZ), cursor);
-    circle(plan, index == 6 ? 12.0f : 20.0f, radius, 3.0f);
-    return_home(plan, cursor);
-    hold(plan, 2.0f);
+    const float radius = index == static_cast<int>(TrajectoryId::Circle05) ? settings.circle_r05 : settings.circle_r10;
+    hold(plan, settings.hold_s);
+    line(plan, index == static_cast<int>(TrajectoryId::Circle05) ? 5.0f : 10.0f, position(x + radius, y, z), cursor);
+    circle(plan, index == static_cast<int>(TrajectoryId::Circle05) ? settings.circle05_s : settings.circle10_s, radius, turns);
+    return_home(plan, cursor, settings);
+    hold(plan, settings.hold_s);
     break;
   }
-  case 8: // figure_eight_tracking
-    hold(plan, 2.0f);
-    figure_eight(plan);
-    hold(plan, 2.0f);
+  case TrajectoryId::FigureEight:
+    hold(plan, settings.hold_s);
+    figure_eight(plan, settings);
+    hold(plan, settings.hold_s);
     break;
-  case 9: // helix_r10
-    hold(plan, 2.0f);
-    line(plan, 10.0f, position(1.0f, 0.0f, kHomeZ), cursor);
-    helix(plan, 20.0f, 1.0f, 3.0f, -0.5f);
-    cursor = position(1.0f, 0.0f, -1.5f);
+  case TrajectoryId::Helix:
+    hold(plan, settings.hold_s);
+    line(plan, 10.0f, position(x + settings.helix_radius, y, z), cursor);
+    helix(plan, settings.helix_s, settings.helix_radius, turns, settings.helix_height);
+    cursor = position(x + settings.helix_radius, y, z + settings.helix_height);
     line(plan, 8.0f, home, cursor);
-    hold(plan, 2.0f);
+    hold(plan, settings.hold_s);
     break;
-  case 10: // yaw_sweep
-    hold(plan, 2.0f);
-    yaw_to(plan, 4.0f, kYaw90, heading);
-    hold(plan, 2.0f);
-    yaw_to(plan, 4.0f, 0.0f, heading);
-    hold(plan, 2.0f);
+  case TrajectoryId::Yaw:
+    hold(plan, settings.hold_s);
+    yaw_to(plan, settings.yaw_s, settings.home_yaw + settings.yaw_sweep, heading);
+    hold(plan, settings.hold_s);
+    yaw_to(plan, settings.yaw_s, settings.home_yaw, heading);
+    hold(plan, settings.hold_s);
     break;
-  case 11: // full_excitation
-    hold(plan, 2.0f);
-    step(plan, 4.0f, position(1.0f, 0.0f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    step(plan, 4.0f, position(0.0f, 1.0f, kHomeZ), cursor);
-    hold(plan, 2.0f);
-    return_home(plan, cursor);
-    line(plan, 4.0f, position(0.0f, 0.0f, -1.25f), cursor);
-    hold(plan, 2.0f);
-    line(plan, 4.0f, home, cursor);
-    yaw_to(plan, 4.0f, kYaw90, heading);
+  case TrajectoryId::FullExcitation:
+    hold(plan, settings.hold_s);
+    step(plan, settings.step_s, position(x + settings.step_x, y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    step(plan, settings.step_s, position(x, y + settings.step_y, z), cursor);
+    hold(plan, settings.hold_s);
+    return_home(plan, cursor, settings);
+    line(plan, settings.line_s, position(x, y, z + settings.line_dz), cursor);
+    hold(plan, settings.hold_s);
+    line(plan, settings.line_s, home, cursor);
+    yaw_to(plan, settings.yaw_s, settings.home_yaw + settings.yaw_sweep, heading);
     hold(plan, 1.0f);
-    yaw_to(plan, 4.0f, 0.0f, heading);
-    figure_eight(plan);
-    hold(plan, 2.0f);
+    yaw_to(plan, settings.yaw_s, settings.home_yaw, heading);
+    figure_eight(plan, settings);
+    hold(plan, settings.hold_s);
     break;
   default:
     return false;
