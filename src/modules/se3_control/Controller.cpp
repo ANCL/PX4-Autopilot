@@ -7,7 +7,7 @@
 //
 //   a_cmd = a_d - (k_x/m)e_x - (k_v/m)e_v
 //
-// The desired physical force includes gravity compensation:
+// The desired specific force includes gravity compensation:
 //
 //   A = m(a_cmd - g e3)
 //
@@ -42,8 +42,7 @@ bool Controller::compute_translation(
   TranslationOutput & output)
 {
   // Validate inputs before calculating a control command.
-  if (!std::isfinite(gains.mass) || gains.mass <= 0.0f ||
-      !std::isfinite(gains.position) || gains.position <= 0.0f ||
+  if (!std::isfinite(gains.position) || gains.position <= 0.0f ||
       !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
       !state.position.isAllFinite() ||
       !state.velocity.isAllFinite() ||
@@ -79,38 +78,35 @@ bool Controller::compute_translation(
   // Kinematic acceleration command with trajectory feedforward.
   const Vector3 acceleration =
     desired_acceleration -
-    position_error * (gains.position / gains.mass) -
-    velocity_error * (gains.velocity / gains.mass);
+    position_error * gains.position -
+    velocity_error * gains.velocity;
 
   const Vector3 gravity{0.0f, 0.0f, kGravity};
 
-  // Physical force reference used to construct the desired attitude
-  // and collective thrust in subsequent controller calculations.
-  const Vector3 force =
-    (acceleration - gravity) * gains.mass;
+  // Mass-independent specific force A/m used for attitude and thrust.
+  const Vector3 force = acceleration - gravity;
 
   if (!acceleration.isAllFinite() || !force.isAllFinite()) {
     return false;
   }
 
   output.acceleration = acceleration;
-  output.force = force;
+  output.specific_force = force;
 
   return true;
 }
 
 // Analytic desired-force derivatives from the nominal rigid-body model.
 //
-// Desired force:
-//   A = -k_x e_x - k_v e_v - m g e3 + m a_d
+// Specific force:
+//   B = A/m = a_d - (kx/m)e_x - (kv/m)e_v - g e3
 //
 // Model acceleration:
-//   a_model = g e3 - (f/m)b3
-//   f       = -A . b3
+//   a_model = g e3 - u b3,  u = -B . b3
 //
-// Force derivatives:
-//   A_dot  = m j_d - k_x e_v - k_v e_a
-//   A_ddot = m s_d - k_x e_a - k_v e_j
+// Specific-force derivatives:
+//   B_dot  = j_d - (kx/m)e_v - (kv/m)e_a
+//   B_ddot = s_d - (kx/m)e_a - (kv/m)e_j
 //
 // Translational acceleration and jerk are model-derived, not obtained by
 // numerically differentiating estimator measurements.
@@ -121,13 +117,12 @@ bool Controller::compute_force_derivatives(
   const TranslationOutput & translation,
   ForceDerivatives & output)
 {
-  if (!std::isfinite(gains.mass) || gains.mass <= 0.0f ||
-      !std::isfinite(gains.position) || gains.position <= 0.0f ||
+  if (!std::isfinite(gains.position) || gains.position <= 0.0f ||
       !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
       !state.velocity.isAllFinite() ||
       !state.attitude.isAllFinite() ||
       !state.angular_velocity.isAllFinite() ||
-      !translation.force.isAllFinite() ||
+       !translation.specific_force.isAllFinite() ||
       !finite(reference.velocity) ||
       !finite(reference.acceleration) ||
       !finite(reference.jerk) ||
@@ -168,10 +163,10 @@ bool Controller::compute_force_derivatives(
     state.attitude(2, 2)
   };
 
-  const float thrust = -(translation.force * body_z);
+  const float thrust = -(translation.specific_force * body_z);
 
   const Vector3 model_acceleration =
-    gravity - body_z * (thrust / gains.mass);
+    gravity - body_z * thrust;
 
   const Vector3 velocity_error =
     state.velocity - velocity_reference;
@@ -181,7 +176,7 @@ bool Controller::compute_force_derivatives(
 
   // First force derivative from reference jerk and tracking errors.
   const Vector3 force_first =
-    jerk_reference * gains.mass -
+    jerk_reference -
     velocity_error * gains.position -
     acceleration_error * gains.velocity;
 
@@ -207,18 +202,18 @@ bool Controller::compute_force_derivatives(
   // Differentiate f = -A . b3 analytically.
   const float thrust_first =
     -(force_first * body_z) -
-    (translation.force * body_z_first);
+    (translation.specific_force * body_z_first);
 
   // Nominal rigid-body jerk from thrust and body-axis derivatives.
   const Vector3 model_jerk =
-    -body_z * (thrust_first / gains.mass) -
-    body_z_first * (thrust / gains.mass);
+    -body_z * thrust_first -
+    body_z_first * thrust;
 
   const Vector3 jerk_error = model_jerk - jerk_reference;
 
   // Second desired-force derivative for angular acceleration feedforward.
   const Vector3 force_second =
-    snap_reference * gains.mass -
+    snap_reference -
     acceleration_error * gains.position -
     jerk_error * gains.velocity;
 
@@ -234,12 +229,12 @@ bool Controller::compute_force_derivatives(
 
 // Calculate the common SE(3) reference before applying either torque law.
 //
-// Translation generates the physical force A. Model-based force derivatives
+// Translation generates A/m. Model-based specific-force derivatives
 // provide the analytic desired angular velocity and acceleration.
 //
 // The collective thrust follows Lee's projection onto the current body Z:
 //
-//   f = -A . (R e3)
+//   u = -(A/m) . (R e3)
 //
 // A non-positive collective command is rejected. The runtime must not
 // publish an invalid thrust command to the control allocator.
@@ -266,7 +261,7 @@ bool Controller::compute_geometry(
   }
 
   if (!AttitudeReference::compute(
-        candidate.translation.force,
+        candidate.translation.specific_force,
         candidate.force_derivatives.first,
         candidate.force_derivatives.second,
         reference.yaw,
@@ -283,11 +278,11 @@ bool Controller::compute_geometry(
     state.attitude(2, 2)
   };
 
-  candidate.collective_thrust_n =
-    -(candidate.translation.force * body_z);
+  candidate.collective_acceleration =
+    -(candidate.translation.specific_force * body_z);
 
-  if (!std::isfinite(candidate.collective_thrust_n) ||
-      candidate.collective_thrust_n <= 0.0f) {
+  if (!std::isfinite(candidate.collective_acceleration) ||
+      candidate.collective_acceleration <= 0.0f) {
     return false;
   }
 

@@ -480,10 +480,8 @@ private:
         const matrix::Quatf quat{_attitude.q};
         state.attitude = matrix::Dcmf{quat};
 
-        // Unit mass is sufficient here: physical mass cancels from the
-        // desired attitude, body rates and normalized collective thrust.
+        // Use the same mass-normalized translation law as ROS Offboard.
         se3_control::TranslationGains translation_gains{};
-        translation_gains.mass = 1.0f;
         translation_gains.position = _param_kx.get();
         translation_gains.velocity = _param_kv.get();
 
@@ -503,7 +501,7 @@ private:
         }
 
         // Convert collective thrust to the normalized PX4 body-z convention.
-        const float thrust = _param_hover.get() * geometric.collective_thrust_n / kGravity;
+        const float thrust = _param_hover.get() * geometric.collective_acceleration / kGravity;
         const float rate_limit = _param_rate_max.get();
 
         if (!std::isfinite(thrust) || !body_rate.isAllFinite() || !std::isfinite(rate_limit)) {

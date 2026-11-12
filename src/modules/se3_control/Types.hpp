@@ -24,9 +24,9 @@ struct State
 
 struct TranslationGains
 {
-  float mass{0.0f};       // Vehicle mass [kg].
-  float position{0.0f};   // Position gain [N/m].
-  float velocity{0.0f};   // Velocity gain [N s/m].
+  // Mass-normalized translational gains: kx/m [1/s^2], kv/m [1/s].
+  float position{0.0f};
+  float velocity{0.0f};
 };
 
 struct TranslationOutput
@@ -34,9 +34,9 @@ struct TranslationOutput
   // Kinematic acceleration command in local NED [m/s^2].
   Vector3 acceleration{};
 
-  // Desired force including gravity compensation, in NED [N].
-  // This is not a normalized PX4 thrust setpoint.
-  Vector3 force{};
+  // Specific force A/m in NED [m/s^2], including gravity compensation.
+  // Not a normalized PX4 thrust setpoint.
+  Vector3 specific_force{};
 };
 
 // Desired attitude and its analytic derivatives.
@@ -67,10 +67,8 @@ struct NormalizedTorqueOutput
   Vector3 torque{};
 };
 
-// First and second time derivatives of the desired force in NED.
-//
-// These derivatives drive the analytic desired-attitude dynamics.
-// Units are N/s and N/s^2, respectively.
+// First/second derivatives of the desired specific force in NED.
+// Units are m/s^3 and m/s^4; these drive desired-attitude dynamics.
 struct ForceDerivatives
 {
   Vector3 first{};
@@ -80,13 +78,13 @@ struct ForceDerivatives
 // Common geometric reference calculated before selecting a torque law.
 //
 // The onboard rate and normalized torque controllers share this attitude.
-// Collective thrust is a physical magnitude [N], not a PX4 command.
+// Collective acceleration is the positive body-Z projection of A/m.
 struct GeometricOutput
 {
   TranslationOutput translation{};
   ForceDerivatives force_derivatives{};
   DesiredAttitudeDynamics desired_attitude{};
-  float collective_thrust_n{0.0f};
+  float collective_acceleration{0.0f};
 };
 
 }  // namespace se3_control

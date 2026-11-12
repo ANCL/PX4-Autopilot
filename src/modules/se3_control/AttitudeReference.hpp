@@ -14,7 +14,7 @@ namespace se3_control
 class AttitudeReference
 {
 public:
-  // Forces are expressed in NED [N], with derivatives [N/s] and [N/s^2].
+  // Specific force B = A/m uses NED [m/s^2], with derivatives [m/s^3] and [m/s^4].
   // Yaw and its derivatives use rad, rad/s, and rad/s^2.
   //
   // Returns false for non-finite inputs or degenerate attitude geometry.
