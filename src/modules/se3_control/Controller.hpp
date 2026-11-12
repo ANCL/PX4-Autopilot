@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <trajectory/Reference.hpp>
+#include <trajectory/Trajectory.hpp>
 
 #include "Types.hpp"
 

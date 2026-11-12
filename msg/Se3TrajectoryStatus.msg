@@ -2,7 +2,7 @@
 # Logged onboard; it is not part of the uXRCE-DDS topic configuration.
 uint64 timestamp                  # PX4 boot time [us]
 uint32 run_id                     # Increments on each accepted run command
-uint32 plan_crc32                 # Checksum from the selected .traj file
+uint32 plan_crc32                 # CRC32 of the effective trajectory definition
 uint8 PHASE_HOLD = 1
 uint8 PHASE_RUNNING = 2
 uint8 PHASE_COMPLETED = 3

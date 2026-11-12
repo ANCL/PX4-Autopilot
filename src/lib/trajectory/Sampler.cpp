@@ -3,9 +3,8 @@
 // Ninth-order time scaling provides derivatives through snap and smooth
 // boundaries between stationary and continuously interpolated segments.
 
-#include "Sampler.hpp"
+#include "Trajectory.hpp"
 
-// #include <algorithm>
 #include <cmath>
 
 namespace trajectory_generator
@@ -82,7 +81,6 @@ Reference stationary(const Vector3 & position, float yaw)
 // endpoints, allowing smooth segments to join stationary references.
 TimeScale smooth_time_scale(float time_s, float duration_s)
 {
-  // const float t = std::max(0.0f, std::min(time_s, duration_s));
   const float t = time_s < 0.0f ? 0.0f : (time_s > duration_s ? duration_s : time_s);
   const float u = t / duration_s;
 
@@ -401,7 +399,6 @@ bool sample(
   }
 
   Reference segment_origin = stationary(origin.position, origin.yaw);
-  // float remaining_s = std::max(0.0f, time_s);
   float remaining_s = time_s > 0.0f ? time_s : 0.0f;
 
   for (std::size_t index = 0; index < sequence.count; ++index) {
