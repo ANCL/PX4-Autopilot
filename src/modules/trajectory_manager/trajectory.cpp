@@ -1,5 +1,4 @@
 // PX4 console interface to firmware-resident trajectory definitions.
-// No SD card, compiled files, or MAVLink transfer client is involved.
 
 #include <trajectory/Catalog.hpp>
 #include <trajectory/Plan.hpp>
