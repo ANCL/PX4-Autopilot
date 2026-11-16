@@ -7,9 +7,10 @@ px4_add_module(
         Controller.cpp
         AttitudeReference.cpp
         AttitudeLaws.cpp
+        trajectory/Catalog.cpp
+        trajectory/Sampler.cpp
     MODULE_CONFIG
         module.yaml
     DEPENDS
-        trajectory_generator
         px4_work_queue
 )

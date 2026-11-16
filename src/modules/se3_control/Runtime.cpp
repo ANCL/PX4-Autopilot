@@ -9,7 +9,7 @@
 #include "AttitudeLaws.hpp"
 #include "Controller.hpp"
 
-#include <trajectory/Trajectory.hpp>
+#include "trajectory/Trajectory.hpp"
 #include <px4_platform_common/atomic.h>
 #include <uORB/topics/vehicle_command.h>
 
@@ -91,6 +91,7 @@ public:
         }
 
         updateParams();
+        trajectory_generator::mark_parameters_used();
         _registration_request_id = hrt_absolute_time();
 
         register_ext_component_request_s request{};
@@ -155,6 +156,14 @@ public:
             return instance->command_hold();
         }
 
+        if (argc == 1 && std::strcmp(argv[0], "list") == 0) {
+            PX4_INFO("available trajectories:");
+            for (std::size_t i = 0; i < trajectory_generator::trajectory_count(); ++i) {
+                PX4_INFO("  %s", trajectory_generator::trajectory_name(i));
+            }
+            return PX4_OK;
+        }
+
         if (argc == 2 && std::strcmp(argv[0], "trajectory") == 0) {
             return instance->command_trajectory(argv[1]);
         }
@@ -175,6 +184,7 @@ PX4 retains rate PID, allocator, and output/flight-safety ownership.
         PRINT_MODULE_USAGE_COMMAND("start");
         PRINT_MODULE_USAGE_COMMAND("select");
         PRINT_MODULE_USAGE_COMMAND("hold");
+        PRINT_MODULE_USAGE_COMMAND("list");
         PRINT_MODULE_USAGE_COMMAND("trajectory");
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
@@ -292,6 +302,7 @@ private:
         _executing.store(false);
         _completed.store(false);
         _active_plan_crc = 0;
+        _active_trajectory_index = -1;
     }
 
     void Run() override
@@ -445,7 +456,10 @@ private:
                 _origin = trajectory.origin;
                 _sequence = trajectory.sequence;
                 _duration_s = trajectory.duration_s;
-                _active_plan_crc = trajectory.checksum;
+                // Live setpoint has no fixed-plan checksum because it can change in flight.
+                _active_plan_crc = requested_index == static_cast<int>(trajectory_generator::TrajectoryId::Setpoint)
+                    ? 0 : trajectory.checksum;
+                _active_trajectory_index = requested_index;
                 ++_run_id;
                 _start_time = hrt_absolute_time();
                 _executing.store(true);
@@ -467,7 +481,17 @@ private:
             return;
         }
 
-        if (_executing.load() && elapsed_s >= _duration_s) {
+        const bool live_setpoint = _active_trajectory_index ==
+            static_cast<int>(trajectory_generator::TrajectoryId::Setpoint);
+        // Live setpoint is the one reference that follows parameter edits.
+        // No interpolation: changes become instantaneous command steps.
+        if (live_setpoint) {
+            reference = {};
+            reference.position = {{_param_sp_x.get(), _param_sp_y.get(), _param_sp_z.get()}};
+            reference.yaw = _param_sp_yaw.get();
+        }
+
+        if (_executing.load() && !live_setpoint && elapsed_s >= _duration_s) {
             _executing.store(false);
             _completed.store(true); // Sampler holds the exact final reference.
         }
@@ -546,7 +570,7 @@ private:
         record.phase = _completed.load() ? se3_trajectory_status_s::PHASE_COMPLETED :
                        (_executing.load() ? se3_trajectory_status_s::PHASE_RUNNING :
                                             se3_trajectory_status_s::PHASE_HOLD);
-        record.elapsed_s = _active_plan_crc > 0 ? fminf(elapsed_s, _duration_s) : 0.0f;
+        record.elapsed_s = _active_trajectory_index >= 0 ? fminf(elapsed_s, _duration_s) : 0.0f;
         for (int axis = 0; axis < 3; ++axis) {
             record.position[axis] = reference.position[axis];
             record.velocity[axis] = reference.velocity[axis];
@@ -632,7 +656,7 @@ private:
     uORB::Subscription _position_sub{ORB_ID(vehicle_local_position)};
     uORB::Subscription _attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::Subscription _gyro_sub{ORB_ID(vehicle_angular_velocity)};
-    uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+    uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 100_ms};
     uORB::Publication<vehicle_attitude_setpoint_s> _attitude_setpoint_pub{ORB_ID(vehicle_attitude_setpoint)};
     uORB::Publication<vehicle_rates_setpoint_s> _rate_setpoint_pub{ORB_ID(vehicle_rates_setpoint)};
     uORB::Publication<se3_trajectory_status_s> _trajectory_status_pub{ORB_ID(se3_trajectory_status)};
@@ -653,6 +677,7 @@ private:
     pthread_mutex_t _trajectory_mutex = PTHREAD_MUTEX_INITIALIZER;
     trajectory_generator::Settings _requested_settings{};
     int _requested_trajectory{-1};
+    int _active_trajectory_index{-1};
     hrt_abstime _start_time{0};
     uint64_t _registration_request_id{0};
     int8_t _mode_id{-1};
@@ -678,6 +703,10 @@ private:
         (ParamFloat<px4::params::SE3_KRY>) _param_kry,
         (ParamFloat<px4::params::SE3_KRZ>) _param_krz,
         (ParamFloat<px4::params::SE3_RATE_MAX>) _param_rate_max,
+        (ParamFloat<px4::params::TRJ_SP_X>) _param_sp_x,
+        (ParamFloat<px4::params::TRJ_SP_Y>) _param_sp_y,
+        (ParamFloat<px4::params::TRJ_SP_Z>) _param_sp_z,
+        (ParamFloat<px4::params::TRJ_SP_YAW>) _param_sp_yaw,
         (ParamFloat<px4::params::MPC_THR_HOVER>) _param_hover,
         (ParamInt<px4::params::SYS_AUTOSTART>) _param_autostart
     )

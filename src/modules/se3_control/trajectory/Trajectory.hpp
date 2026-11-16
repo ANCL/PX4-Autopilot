@@ -1,4 +1,5 @@
-// Analytic trajectory references and firmware-resident trajectory definitions.
+// Analytic position and yaw references for the native SE3 controller.
+// Trajectory math has no dependency on SE3 gains, PX4 flight modes or uORB.
 #pragma once
 
 #include <cstddef>
@@ -57,44 +58,32 @@ struct Trajectory
     uint32_t checksum{0};
 };
 
-// Configuration is snapshotted when a trajectory is commanded.
+// Setpoint values are read live by SE3; other values are snapshotted at start.
 struct Settings
 {
-    float home_x{};
-    float home_y{};
-    float home_z{};
-    float home_yaw{};
-    float step_x{};
-    float step_y{};
-    float line_x{};
-    float line_y{};
-    float line_dz{};
-    float circle_r05{};
-    float circle_r10{};
-    float helix_radius{};
-    float helix_height{};
-    float figure_x{};
-    float figure_y{};
-    float yaw_sweep{};
-    float hover_s{};
-    float hold_s{};
-    float step_s{};
-    float line_s{};
-    float return_s{};
-    float circle05_s{};
-    float circle10_s{};
-    float figure_s{};
-    float helix_s{};
-    float yaw_s{};
-    int32_t turns{};
- };
+    float sp_x{}, sp_y{}, sp_z{}, sp_yaw{};
+    float step_hold{};
+    float home_x{}, home_y{}, home_z{}, home_yaw{};
+    float circle_radius{}, circle_duration{};
+    int32_t circle_turns{};
+    float figure_x{}, figure_y{}, figure_duration{};
+    int32_t figure_turns{};
+};
+
+enum class TrajectoryId : int { Setpoint, Steps5, Circle, Figure8 };
 
 bool validate(const Sequence &sequence);
 bool sample(const Sequence &sequence, float time_s,
             const Reference &origin, Reference &reference);
 
+std::size_t trajectory_count();
+const char *trajectory_name(std::size_t index);
 int trajectory_index(const char *name);
+
+// Called once during SE3 initialization to expose TRJ_* in PX4/QGC.
+void mark_parameters_used();
+
 bool load_settings(Settings &settings);
-bool build_trajectory(int index, const Settings &settings, Trajectory &trajectory);
+bool build_trajectory(int index, const Settings &settings, Trajectory &plan);
 
 } // namespace trajectory_generator
