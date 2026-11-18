@@ -130,7 +130,7 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("tiltrotor_extra_controls", 100);
 	add_topic("trajectory_setpoint", 200);
 	add_topic("se3_trajectory_status", 10);
-	add_topic("se3_wrench_setpoint", 10);
+	add_topic("se3_wrench_setpoint", 10); // Full rate with the SDLOG_PROFILE high-rate bit (16).
 	add_topic("se3_allocation_status", 10);
 	add_topic("transponder_report");
 	add_topic("vehicle_acceleration", 50);
@@ -280,6 +280,12 @@ void LoggedTopics::add_high_rate_topics()
 	add_topic("actuator_servos");
 	add_topic_multi("vehicle_thrust_setpoint", 0, 2);
 	add_topic_multi("vehicle_torque_setpoint", 0, 2);
+
+	// SE3 PHYSICAL: every gyro-rate wrench and its allocation, up to the logger
+	// loop rate (published only while PHYSICAL owns allocation; 100 Hz in the
+	// default profile).
+	add_topic("se3_wrench_setpoint");
+	add_topic("se3_allocation_status");
 }
 
 void LoggedTopics::add_debug_topics()

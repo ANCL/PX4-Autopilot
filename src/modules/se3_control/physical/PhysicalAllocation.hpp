@@ -70,13 +70,23 @@ private:
 	bool _configured{false};
 };
 
-// control_allocator accepts an SE3 wrench only while all of these hold, so the
-// PX4 rate controller and the physical path never command the motors together.
+// control_allocator ownership of the motors.
+//
+// The physical path owns allocation exactly while the vehicle is armed in the
+// navigation state named by the SE3 wrench, with PX4 allocation enabled and the
+// PX4 rate controller disabled. In that configuration the native normalized
+// path is never used, so the two never command the motors together, and
+// nothing else (stale native setpoints included) can drive them.
+//
+// Within it, a physical motor command is published only while the wrench it
+// was allocated from is at most kWrenchTimeout old. After that the allocator
+// stops publishing; recovery is the SE3 fault response, which re-enables the
+// PX4 rate controller (ending this configuration), or Commander's failsafe.
 static constexpr uint64_t kWrenchTimeout = 20000; // [us]
 
 struct OwnershipState {
-	uint64_t now{0};
-	uint64_t setpoint_timestamp{0};
+	bool input_available{false};   // se3_wrench_setpoint callback registered
+	bool setpoint_received{false};
 	uint8_t setpoint_nav_state{0};
 	uint8_t nav_state{0};
 	bool armed{false};
@@ -86,9 +96,15 @@ struct OwnershipState {
 
 inline bool physical_owns_allocation(const OwnershipState &state)
 {
-	return state.armed && state.allocation_enabled && !state.rates_enabled &&
-	       state.setpoint_timestamp > 0 && state.setpoint_nav_state == state.nav_state &&
-	       state.now >= state.setpoint_timestamp && state.now - state.setpoint_timestamp <= kWrenchTimeout;
+	return state.input_available && state.setpoint_received && state.armed &&
+	       state.allocation_enabled && !state.rates_enabled && state.setpoint_nav_state == state.nav_state;
+}
+
+// True if a command allocated from a wrench with this timestamp may still be
+// (re)published at time now.
+inline bool physical_command_fresh(uint64_t now, uint64_t wrench_timestamp)
+{
+	return wrench_timestamp > 0 && now >= wrench_timestamp && now - wrench_timestamp <= kWrenchTimeout;
 }
 
 } // namespace se3_physical

@@ -96,10 +96,13 @@ ControlAllocator::init()
 	}
 
 #if defined(CONFIG_MODULES_SE3_CONTROL)
+	// Optional experimental input: without it the physical path never owns
+	// allocation (SE3 PHYSICAL then faults back to the PX4 rate controller),
+	// and native allocation is unaffected.
+	_se3_input_available = _se3_wrench_sub.registerCallback();
 
-	if (!_se3_wrench_sub.registerCallback()) {
-		PX4_ERR("SE3 wrench callback registration failed");
-		return false;
+	if (!_se3_input_available) {
+		PX4_WARN("SE3 wrench input unavailable, physical allocation disabled");
 	}
 
 #endif
@@ -396,15 +399,15 @@ ControlAllocator::Run()
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
 
 #if defined(CONFIG_MODULES_SE3_CONTROL)
-	// While PHYSICAL SE3 owns allocation, its SI wrench replaces the normalized
-	// torque/thrust setpoints (mc_rate_control publishes none while the rate
-	// loop is disabled) and the native allocation and status are skipped.
-	// A wrench from any other state is ignored.
-	const bool se3_wrench_updated = _se3_wrench_sub.update(&_se3_wrench);
+	// While PHYSICAL SE3 owns allocation (see physical_owns_allocation), its SI
+	// wrench replaces the normalized torque/thrust setpoints and the native
+	// allocation and status are skipped. Only a command allocated from a fresh
+	// wrench is published; once wrench updates stop, nothing is republished.
+	const bool se3_wrench_updated = _se3_input_available && _se3_wrench_sub.update(&_se3_wrench);
 
 	se3_physical::OwnershipState ownership{};
-	ownership.now = now;
-	ownership.setpoint_timestamp = _se3_wrench.timestamp;
+	ownership.input_available = _se3_input_available;
+	ownership.setpoint_received = _se3_wrench.timestamp > 0;
 	ownership.setpoint_nav_state = _se3_wrench.nav_state;
 	ownership.nav_state = _nav_state;
 	ownership.armed = _armed;
@@ -412,14 +415,19 @@ ControlAllocator::Run()
 	ownership.rates_enabled = _rates_enabled;
 
 	if (se3_physical::physical_owns_allocation(ownership)) {
-		// Each gyro sample is allocated once; a backup run republishes.
-		if (se3_wrench_updated && _se3_wrench.timestamp_sample > _se3_last_sample) {
+		// Each gyro sample is allocated once; a backup run republishes it
+		// while it is fresh.
+		if (se3_wrench_updated && _se3_wrench.timestamp_sample > _se3_last_sample
+		    && se3_physical::physical_command_fresh(now, _se3_wrench.timestamp)) {
 			_se3_last_sample = _se3_wrench.timestamp_sample;
 			_last_run = now;
 			allocate_se3_physical(dt);
 		}
 
-		publish_actuator_controls();
+		if (_se3_command_stored && se3_physical::physical_command_fresh(now, _se3_command_wrench_time)) {
+			publish_actuator_controls();
+		}
+
 		perf_end(_loop_perf);
 		return;
 	}
@@ -445,6 +453,9 @@ ControlAllocator::Run()
 
 	if (do_update) {
 		_last_run = now;
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+		_se3_command_stored = false; // Overwritten by this native allocation.
+#endif
 
 		check_for_motor_failures();
 
@@ -490,6 +501,17 @@ ControlAllocator::Run()
 			_control_allocation[i]->clipActuatorSetpoint();
 		}
 	}
+
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+
+	// After physical ownership ends, the stored physical command is never
+	// republished: only a fresh native allocation drives the motors again.
+	if (_se3_command_stored) {
+		perf_end(_loop_perf);
+		return;
+	}
+
+#endif
 
 	// Publish actuator setpoint and allocator status
 	publish_actuator_controls();
@@ -809,8 +831,9 @@ ControlAllocator::allocate_se3_physical(float dt)
 	const se3_physical::Wrench request{_se3_wrench.thrust, matrix::Vector3f{_se3_wrench.moment}};
 	se3_physical::AllocationResult result{};
 
-	// An unknown model or incompatible outputs leave the last motor commands
-	// in place; SE3 sees compatible = false and hands control back to PX4.
+	// An unknown model or incompatible outputs allocate nothing and nothing
+	// is published for this wrench; SE3 sees compatible = false and hands
+	// torque production back to the PX4 rate controller.
 	status.compatible = _se3_model == _se3_wrench.model && se3_motors_compatible()
 			    && _se3_allocation.allocate(request, result);
 
@@ -828,6 +851,8 @@ ControlAllocator::allocate_se3_physical(float dt)
 
 		allocation.clipActuatorSetpoint();
 		_timestamp_sample = _se3_wrench.timestamp_sample;
+		_se3_command_stored = true;
+		_se3_command_wrench_time = _se3_wrench.timestamp;
 
 		// Report the wrench of the commands actually published: after slew
 		// limiting, with stopped or failed motors producing no thrust.

@@ -1,3 +1,7 @@
 #!/bin/sh
 # Register native SE3 at boot without selecting it or starting a trajectory.
-se3_control start
+# Only firmware built with se3_control (px4_fmu-v6c_se3) has its parameters.
+if param greater -s SE3_ENABLE -1
+then
+	se3_control start
+fi

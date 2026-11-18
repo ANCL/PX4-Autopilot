@@ -9,7 +9,9 @@
 
 #include "AttitudeLaws.hpp"
 #include "AttitudeReference.hpp"
+#include "ControlPath.hpp"
 #include "Controller.hpp"
+#include "physical/PhysicalAllocation.hpp"
 #include "trajectory/Trajectory.hpp"
 
 #include <cmath>
@@ -414,4 +416,125 @@ TEST(Se3AttitudeLaws, PhysicalMomentFeedbackSignsAndInvalidInputs)
 	state.angular_velocity(0) = INFINITY;
 	EXPECT_FALSE(AttitudeLaws::physical(state, desired, J, physical_gains(), output));
 	expect_near(output.moment, previous.moment, 0.0f);
+}
+
+TEST(Se3ControlPath, ParameterValuesSelectTheThreePaths)
+{
+  ControlPath path = ControlPath::Physical;
+  ASSERT_TRUE(control_path_from_parameter(0, path));
+  EXPECT_EQ(path, ControlPath::AttitudePx4);
+  ASSERT_TRUE(control_path_from_parameter(1, path));
+  EXPECT_EQ(path, ControlPath::RatePx4);
+  ASSERT_TRUE(control_path_from_parameter(2, path));
+  EXPECT_EQ(path, ControlPath::Physical);
+
+  // Unknown values select nothing (the module then refuses to start).
+  path = ControlPath::RatePx4;
+  EXPECT_FALSE(control_path_from_parameter(-1, path));
+  EXPECT_FALSE(control_path_from_parameter(3, path));
+  EXPECT_EQ(path, ControlPath::RatePx4);
+
+  EXPECT_STREQ(control_path_name(ControlPath::AttitudePx4), "ATTITUDE_PX4");
+  EXPECT_STREQ(control_path_name(ControlPath::RatePx4), "RATE_PX4");
+  EXPECT_STREQ(control_path_name(ControlPath::Physical), "PHYSICAL");
+}
+
+TEST(Se3ControlPath, ModeEnablesOnlyTheRequiredPx4Controllers)
+{
+  const ModeControllers attitude = mode_controllers(ControlPath::AttitudePx4, false);
+  EXPECT_TRUE(attitude.attitude && attitude.rates && attitude.allocation);
+
+  // RATE_PX4 registers exactly as before: rate loop and allocator.
+  const ModeControllers rate = mode_controllers(ControlPath::RatePx4, false);
+  EXPECT_TRUE(!rate.attitude && rate.rates && rate.allocation);
+
+  const ModeControllers physical = mode_controllers(ControlPath::Physical, false);
+  EXPECT_TRUE(!physical.attitude && !physical.rates && physical.allocation);
+
+  // PHYSICAL fault: torque production returns to the PX4 rate controller.
+  const ModeControllers fallback = mode_controllers(ControlPath::Physical, true);
+  EXPECT_TRUE(!fallback.attitude && fallback.rates && fallback.allocation);
+
+  // The fallback flag affects only PHYSICAL.
+  EXPECT_TRUE(mode_controllers(ControlPath::RatePx4, true).rates);
+  EXPECT_TRUE(mode_controllers(ControlPath::AttitudePx4, true).attitude);
+}
+
+TEST(Se3ControlPath, RatePx4SelectionIsTheOriginalPredicate)
+{
+  for (int bits = 0; bits < 16; ++bits) {
+    ControlModeFlags flags{};
+    flags.attitude = bits & 1;
+    flags.rates = bits & 2;
+    flags.multicopter_position = bits & 4;
+    flags.allocation = bits & 8;
+
+    // Original RATE_PX4 condition (independent of the fault state).
+    const bool original = flags.rates && !flags.attitude && !flags.multicopter_position && flags.allocation;
+    EXPECT_EQ(controllers_match(ControlPath::RatePx4, false, flags), original) << bits;
+    EXPECT_EQ(controllers_match(ControlPath::RatePx4, true, flags), original) << bits;
+  }
+}
+
+TEST(Se3ControlPath, EachPathPublishesOnlyWithItsOwnControllers)
+{
+  auto flags_of = [](const ModeControllers & controllers) {
+    ControlModeFlags flags{};
+    flags.attitude = controllers.attitude;
+    flags.rates = controllers.rates;
+    flags.allocation = controllers.allocation;
+    return flags;
+  };
+
+  const ControlPath paths[] {ControlPath::AttitudePx4, ControlPath::RatePx4, ControlPath::Physical};
+
+  // A path matches the configuration it registers and no other path's.
+  for (ControlPath path : paths) {
+    for (ControlPath other : paths) {
+      const ControlModeFlags flags = flags_of(mode_controllers(other, false));
+      EXPECT_EQ(controllers_match(path, false, flags), path == other);
+    }
+  }
+
+  // Never while PX4 position control or no allocation is active (e.g. a
+  // native mode, or termination).
+  ControlModeFlags position = flags_of(mode_controllers(ControlPath::AttitudePx4, false));
+  position.multicopter_position = true;
+  ControlModeFlags no_allocation = flags_of(mode_controllers(ControlPath::Physical, false));
+  no_allocation.allocation = false;
+
+  for (ControlPath path : paths) {
+    EXPECT_FALSE(controllers_match(path, false, position));
+    EXPECT_FALSE(controllers_match(path, true, position));
+    EXPECT_FALSE(controllers_match(path, false, no_allocation));
+  }
+
+  // Faulted PHYSICAL keeps handling its fault before and after Commander
+  // applies the rate-control fallback; unfaulted it never runs with it.
+  const ControlModeFlags fallback = flags_of(mode_controllers(ControlPath::Physical, true));
+  EXPECT_FALSE(controllers_match(ControlPath::Physical, false, fallback));
+  EXPECT_TRUE(controllers_match(ControlPath::Physical, true, fallback));
+  EXPECT_TRUE(controllers_match(ControlPath::Physical, true,
+                                flags_of(mode_controllers(ControlPath::Physical, false))));
+}
+
+TEST(Se3ControlPath, OnlyUnfaultedPhysicalOwnsTheAllocator)
+{
+  // control_allocator's ownership rule against each registered configuration.
+  auto owns = [](const ModeControllers & controllers) {
+    se3_physical::OwnershipState state{};
+    state.input_available = true;
+    state.setpoint_received = true;
+    state.setpoint_nav_state = 23;
+    state.nav_state = 23;
+    state.armed = true;
+    state.allocation_enabled = controllers.allocation;
+    state.rates_enabled = controllers.rates;
+    return se3_physical::physical_owns_allocation(state);
+  };
+
+  EXPECT_TRUE(owns(mode_controllers(ControlPath::Physical, false)));
+  EXPECT_FALSE(owns(mode_controllers(ControlPath::Physical, true)));   // Fault handoff
+  EXPECT_FALSE(owns(mode_controllers(ControlPath::RatePx4, false)));
+  EXPECT_FALSE(owns(mode_controllers(ControlPath::AttitudePx4, false)));
 }

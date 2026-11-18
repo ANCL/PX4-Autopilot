@@ -1,4 +1,9 @@
-# Geometric SE(3) control module (RATE_PX4 body-rate or PHYSICAL wrench path).
+# Geometric SE(3) control module: ATTITUDE_PX4, RATE_PX4 or PHYSICAL (SE3_CTRL).
+
+# Physical vehicle models and rotor-thrust allocation (se3_physical), shared
+# with control_allocator, which links it when this module is enabled.
+add_subdirectory(physical)
+
 px4_add_module(
     MODULE modules__se3_control
     MAIN se3_control
@@ -7,6 +12,7 @@ px4_add_module(
         Controller.cpp
         AttitudeReference.cpp
         AttitudeLaws.cpp
+        physical/PhysicalPath.cpp
         trajectory/Catalog.cpp
         trajectory/Sampler.cpp
     MODULE_CONFIG

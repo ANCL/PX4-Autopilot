@@ -364,7 +364,11 @@ fi
 
 # Register SE3 at every SITL boot, after Commander is running. Registration
 # is passive: no arming, mode switch, reposition, or trajectory execution.
-se3_control start
+# Only builds with se3_control have its parameters.
+if param greater -s SE3_ENABLE -1
+then
+	se3_control start
+fi
 
 mavlink boot_complete
 replay trystart

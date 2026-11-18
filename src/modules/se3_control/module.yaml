@@ -59,19 +59,32 @@ parameters:
             description:
                 short: Native SE3 attitude control path
                 long: |
-                    RATE_PX4: body-rate and normalized-thrust setpoints for the
-                    PX4 rate controller and native allocation (unchanged path).
+                    ATTITUDE_PX4: geometric attitude and normalized thrust
+                    (vehicle_attitude_setpoint) for the PX4 attitude
+                    controller, PX4 rate controller and native allocation,
+                    with their MC_* gains. The SE3 rate gains are unused.
+                    RATE_PX4: SE3 body-rate and normalized-thrust setpoints for
+                    the PX4 rate controller and native allocation (original
+                    SE3 controller).
                     PHYSICAL: physical Lee moment and thrust in SI units at the
                     gyro rate, allocated in rotor-thrust space with the SE3_MODEL
                     model; the PX4 rate controller is disabled while SE3 is
-                    selected. Requires THR_MDL_FAC = 0 and the model's airframe
-                    and output parameters. Fixed until reboot.
+                    selected and re-enabled on an SE3 fault. Requires
+                    THR_MDL_FAC = 0 and the model's airframe and output
+                    parameters.
+                    Fixed until reboot. Numbering changed from the earlier
+                    experimental build (0 RATE_PX4, 1 PHYSICAL): a value of 1
+                    stored by that build now selects RATE_PX4. The active path
+                    is printed at boot and by 'se3_control status'.
             type: enum
             values:
-                0: RATE_PX4
-                1: PHYSICAL
+                0: ATTITUDE_PX4
+                1: RATE_PX4
+                2: PHYSICAL
+            min: 0
+            max: 2
             reboot_required: true
-            default: 0
+            default: 1
         SE3_MODEL:
             description:
                 short: Native SE3 physical vehicle model

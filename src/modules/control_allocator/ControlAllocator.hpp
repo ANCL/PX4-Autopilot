@@ -80,7 +80,7 @@
 #include <uORB/topics/failure_detector_status.h>
 
 #if defined(CONFIG_MODULES_SE3_CONTROL)
-#include <lib/se3_physical/PhysicalAllocation.hpp>
+#include <modules/se3_control/physical/PhysicalAllocation.hpp>
 #include <uORB/topics/se3_allocation_status.h>
 #include <uORB/topics/se3_wrench_setpoint.h>
 #endif
@@ -214,6 +214,9 @@ private:
 	se3_physical::Allocation _se3_allocation{};
 	int _se3_model{-1};             ///< model id configured in _se3_allocation, -1 if none
 	hrt_abstime _se3_last_sample{0};
+	hrt_abstime _se3_command_wrench_time{0}; ///< wrench timestamp of the physical command in _actuator_sp
+	bool _se3_command_stored{false}; ///< _actuator_sp holds a physical command, not a native allocation
+	bool _se3_input_available{false}; ///< optional: native allocation never depends on it
 	uint8_t _nav_state{0};
 	bool _rates_enabled{true};
 #endif

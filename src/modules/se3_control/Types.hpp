@@ -95,8 +95,9 @@ struct ForceDerivatives
 
 // Common geometric reference calculated before any attitude law.
 //
-// The runtime uses the body-rate law (SE3_CTRL = RATE_PX4) or the physical
-// moment law (SE3_CTRL = PHYSICAL). The normalized torque law in AttitudeLaws
+// The runtime commands the desired attitude directly (SE3_CTRL =
+// ATTITUDE_PX4), or uses the body-rate law (RATE_PX4) or the physical moment
+// law (PHYSICAL). The normalized torque law in AttitudeLaws
 // uses the same reference but is not selected by the runtime.
 // Collective acceleration is the positive body-Z projection of A/m.
 struct GeometricOutput

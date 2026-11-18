@@ -335,8 +335,8 @@ TEST(PhysicalAllocation, CollectiveLimitsAndInvalidRequests)
 TEST(PhysicalAllocation, OwnershipRequiresCurrentModeWithoutRateControl)
 {
 	OwnershipState state{};
-	state.now = 1000000;
-	state.setpoint_timestamp = state.now - 4000;
+	state.input_available = true;
+	state.setpoint_received = true;
 	state.setpoint_nav_state = 23;
 	state.nav_state = 23;
 	state.armed = true;
@@ -345,19 +345,11 @@ TEST(PhysicalAllocation, OwnershipRequiresCurrentModeWithoutRateControl)
 	EXPECT_TRUE(physical_owns_allocation(state));
 
 	OwnershipState changed = state;
-	changed.rates_enabled = true;       // PX4 rate controller active
+	changed.rates_enabled = true;       // PX4 rate controller active (incl. SE3 fallback)
 	EXPECT_FALSE(physical_owns_allocation(changed));
 
 	changed = state;
 	changed.nav_state = 2;              // Another mode (Position) selected
-	EXPECT_FALSE(physical_owns_allocation(changed));
-
-	changed = state;
-	changed.setpoint_timestamp = state.now - kWrenchTimeout - 1; // Stale
-	EXPECT_FALSE(physical_owns_allocation(changed));
-
-	changed = state;
-	changed.setpoint_timestamp = state.now + 1; // From the future
 	EXPECT_FALSE(physical_owns_allocation(changed));
 
 	changed = state;
@@ -369,6 +361,31 @@ TEST(PhysicalAllocation, OwnershipRequiresCurrentModeWithoutRateControl)
 	EXPECT_FALSE(physical_owns_allocation(changed));
 
 	changed = state;
-	changed.setpoint_timestamp = 0;     // Never received
+	changed.setpoint_received = false;  // Never received
 	EXPECT_FALSE(physical_owns_allocation(changed));
+}
+
+TEST(PhysicalAllocation, UnavailableWrenchInputNeverOwnsAllocation)
+{
+	// A failed se3_wrench_setpoint callback registration leaves native
+	// allocation running and never hands the motors to the physical path.
+	OwnershipState state{};
+	state.input_available = false;
+	state.setpoint_received = true;
+	state.setpoint_nav_state = 23;
+	state.nav_state = 23;
+	state.armed = true;
+	state.allocation_enabled = true;
+	state.rates_enabled = false;
+	EXPECT_FALSE(physical_owns_allocation(state));
+}
+
+TEST(PhysicalAllocation, StalePhysicalCommandsAreNotPublished)
+{
+	const uint64_t now = 1000000;
+	EXPECT_TRUE(physical_command_fresh(now, now));
+	EXPECT_TRUE(physical_command_fresh(now, now - kWrenchTimeout));
+	EXPECT_FALSE(physical_command_fresh(now, now - kWrenchTimeout - 1)); // Updates stopped
+	EXPECT_FALSE(physical_command_fresh(now, now + 1));                  // From the future
+	EXPECT_FALSE(physical_command_fresh(now, 0));                        // Never allocated
 }
