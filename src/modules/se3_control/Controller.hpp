@@ -39,7 +39,7 @@ public:
     const TranslationOutput & translation,
     ForceDerivatives & output);
 
-  // Calculate the complete geometric reference shared by both torque laws.
+  // Calculate the complete geometric reference used by the attitude laws.
   //
   // The function does not select a control law or normalize motor commands.
   // On failure, output remains unchanged.

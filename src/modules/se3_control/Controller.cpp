@@ -227,7 +227,7 @@ bool Controller::compute_force_derivatives(
   return true;
 }
 
-// Calculate the common SE(3) reference before applying either torque law.
+// Calculate the common SE(3) reference before applying an attitude law.
 //
 // Translation generates A/m. Model-based specific-force derivatives
 // provide the analytic desired angular velocity and acceleration.

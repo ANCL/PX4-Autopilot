@@ -75,9 +75,10 @@ struct ForceDerivatives
   Vector3 second{};
 };
 
-// Common geometric reference calculated before selecting a torque law.
+// Common geometric reference calculated before any attitude law.
 //
-// The onboard rate and normalized torque controllers share this attitude.
+// The runtime currently uses only the body-rate law. The normalized torque law
+// in AttitudeLaws uses the same reference but is not selected by the runtime.
 // Collective acceleration is the positive body-Z projection of A/m.
 struct GeometricOutput
 {

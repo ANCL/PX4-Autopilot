@@ -121,7 +121,9 @@ bool AttitudeLaws::body_rate(
     return false;
   }
 
-  // Same law as the validated ROS 2 SE(3) attitude_rate handoff.
+  // Same law as the ROS 2 SE(3) attitude_rate handoff. Gains are configured
+  // independently (SE3_KR* here, attitude_gain in controller.yaml) and their
+  // defaults differ.
   // Omega_sp = R^T R_d Omega_d - K_R e_R.
   const Vector3 candidate = errors.desired_rate_current -
                             component_product(attitude_gain, errors.attitude);

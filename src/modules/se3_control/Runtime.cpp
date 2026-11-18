@@ -5,13 +5,17 @@
 // actuator commands. Commander manages flight-mode transitions and failsafes.
 //
 // Setpoints are published only while this registered flight mode is active.
+// Fault handling (Position-mode request or native PX4 failsafe) is described
+// at enter_fault().
 
 #include "AttitudeLaws.hpp"
 #include "Controller.hpp"
 
 #include "trajectory/Trajectory.hpp"
+#include <parameters/param.h>
 #include <px4_platform_common/atomic.h>
 #include <uORB/topics/vehicle_command.h>
+#include <uORB/topics/vehicle_command_ack.h>
 
 #include <drivers/drv_hrt.h>
 #include <px4_platform_common/module.h>
@@ -55,10 +59,35 @@ constexpr hrt_abstime kPositionTimeout = 200_ms;
 constexpr hrt_abstime kAttitudeTimeout = 200_ms;
 constexpr hrt_abstime kGyroTimeout = 100_ms;
 
+// Commander normally acknowledges a mode request within one 10 ms loop.
+constexpr hrt_abstime kHandoffAckTimeout = 100_ms;
+
 bool fresh(hrt_abstime now, hrt_abstime stamp, hrt_abstime limit)
 {
     return stamp > 0 && now >= stamp && now - stamp <= limit;
 }
+
+// Navigation-state request handled by Commander like a user mode change:
+// it is accepted only if the requested mode can run.
+vehicle_command_s nav_state_command(uint8_t nav_state, const vehicle_status_s &status)
+{
+    vehicle_command_s command{};
+    command.timestamp = hrt_absolute_time();
+    command.command = vehicle_command_s::VEHICLE_CMD_SET_NAV_STATE;
+    command.param1 = static_cast<float>(nav_state);
+    command.source_system = status.system_id;
+    command.source_component = status.component_id;
+    command.target_system = status.system_id;
+    command.target_component = status.component_id;
+    return command;
+}
+
+// Fault classes. A controller fault (internal computation, trajectory,
+// configuration, or estimator reference-frame reset with a valid estimate)
+// requests Position mode. A state fault (invalid/stale estimate, landed,
+// failsafe, disarmed) is left entirely to Commander's native failsafe.
+enum class FaultClass : int32_t { None, Controller, State };
+enum class FaultResponse : uint8_t { None, PositionRequested, PositionAccepted, NativeFailsafe };
 } // namespace
 
 class Se3Runtime final : public ModuleBase<Se3Runtime>, public ModuleParams, public px4::ScheduledWorkItem
@@ -117,6 +146,10 @@ public:
                  (int)_active.load(), (int)_faulted);
         PX4_INFO("trajectory: %s", _executing.load() ? "running" :
                  (_completed.load() ? "completed (holding final pose)" : "holding"));
+        static constexpr const char *responses[] = {
+            "none", "Position requested", "Position accepted", "PX4 failsafe"
+        };
+        PX4_INFO("fault response: %s", responses[static_cast<int>(_fault_response)]);
         return 0;
     }
 
@@ -168,6 +201,12 @@ public:
             return instance->command_trajectory(argv[1]);
         }
 
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+        if (argc == 2 && std::strcmp(argv[0], "fault") == 0) {
+            return instance->command_fault(argv[1]);
+        }
+#endif
+
         return print_usage("unknown command");
     }
 
@@ -186,6 +225,10 @@ PX4 retains rate PID, allocator, and output/flight-safety ownership.
         PRINT_MODULE_USAGE_COMMAND("hold");
         PRINT_MODULE_USAGE_COMMAND("list");
         PRINT_MODULE_USAGE_COMMAND("trajectory");
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+        PRINT_MODULE_USAGE_COMMAND_DESCR("fault", "SITL test only: inject a fault (requires SYS_FAILURE_EN=1)");
+        PRINT_MODULE_USAGE_ARG("controller|state", "Fault class", false);
+#endif
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
     }
@@ -209,16 +252,7 @@ private:
             return PX4_ERROR;
         }
 
-        vehicle_command_s command{};
-        command.timestamp = hrt_absolute_time();
-        command.command = vehicle_command_s::VEHICLE_CMD_SET_NAV_STATE;
-        command.param1 = static_cast<float>(mode_id);
-        command.source_system = status.system_id;
-        command.source_component = status.component_id;
-        command.target_system = status.system_id;
-        command.target_component = status.component_id;
-
-        if (!_vehicle_command_pub.publish(command)) {
+        if (!_vehicle_command_pub.publish(nav_state_command(static_cast<uint8_t>(mode_id), status))) {
             PX4_ERR("mode request publication failed");
             return PX4_ERROR;
         }
@@ -237,6 +271,141 @@ private:
         _hold_requested.store(true);
         PX4_INFO("SE3 current-position hold requested");
         return PX4_OK;
+    }
+
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+    // SITL-only test hook, gated like PX4's `failure` command. The injected
+    // fault enters exactly the response path of a detected fault of that class.
+    int command_fault(const char *kind)
+    {
+        int32_t enabled = 0;
+
+        if (param_get(param_find("SYS_FAILURE_EN"), &enabled) != PX4_OK || enabled != 1) {
+            PX4_ERR("fault injection disabled by SYS_FAILURE_EN");
+            return PX4_ERROR;
+        }
+
+        if (!_active.load()) {
+            PX4_ERR("SE3 is not the active flight mode");
+            return PX4_ERROR;
+        }
+
+        if (std::strcmp(kind, "controller") == 0) {
+            _injected_fault.store(static_cast<int32_t>(FaultClass::Controller));
+
+        } else if (std::strcmp(kind, "state") == 0) {
+            _injected_fault.store(static_cast<int32_t>(FaultClass::State));
+
+        } else {
+            PX4_ERR("fault class must be controller or state");
+            return PX4_ERROR;
+        }
+
+        PX4_INFO("SE3 %s fault injection requested", kind);
+        return PX4_OK;
+    }
+#endif
+
+    void publish_arming_reply(uint8_t request_id, bool can_arm_and_run)
+    {
+        // Every reply carries the mode requirements; Commander applies them
+        // from each reply, so the immediate fault reply must set them too.
+        arming_check_reply_s reply{};
+        reply.timestamp = hrt_absolute_time();
+        reply.request_id = request_id;
+        reply.registration_id = static_cast<uint8_t>(_arming_check_id);
+        reply.can_arm_and_run = can_arm_and_run;
+        reply.mode_req_angular_velocity = true;
+        reply.mode_req_attitude = true;
+        reply.mode_req_local_position = true;
+        reply.mode_req_prevent_arming = true; // Airborne handoff only, no takeoff/arm.
+        _arming_reply_pub.publish(reply);
+    }
+
+    // Latch a fault on the first failure while SE3 is selected.
+    //
+    // A controller fault requests Position mode; Commander accepts it only if
+    // Position can run. A state fault, or a rejected/unanswered request, is
+    // reported to Commander immediately (re-using the current request ID)
+    // instead of at the next 300 ms health request, so its native failsafe
+    // applies without delay. SE3 never reports itself healthy while faulted.
+    void enter_fault(FaultClass fault, const char *reason)
+    {
+        clear_trajectory_request();
+        _active.store(false);
+        _executing.store(false);
+        _faulted = true;
+
+        if (fault == FaultClass::Controller) {
+            PX4_WARN("SE3 fault: %s; requesting Position mode", reason);
+            _position_request_time = hrt_absolute_time();
+            _handoff_command_pub.publish(nav_state_command(vehicle_status_s::NAVIGATION_STATE_POSCTL, _status));
+            _fault_response = FaultResponse::PositionRequested;
+
+        } else {
+            PX4_WARN("SE3 fault: %s; leaving to PX4 failsafe", reason);
+            report_fault_to_commander();
+        }
+
+        continue_fault_handoff();
+    }
+
+    void report_fault_to_commander()
+    {
+        publish_arming_reply(_last_arming_request_id, false);
+        _fault_response = FaultResponse::NativeFailsafe;
+    }
+
+    // Runs every cycle while SE3 is still selected after a fault.
+    void continue_fault_handoff()
+    {
+        if (_fault_response == FaultResponse::PositionRequested) {
+            vehicle_command_ack_s ack{};
+
+            while (_command_ack_sub.update(&ack)) {
+                if (ack.command == vehicle_command_s::VEHICLE_CMD_SET_NAV_STATE &&
+                    ack.target_component == _status.component_id &&
+                    ack.timestamp >= _position_request_time) {
+                    if (ack.result == vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED) {
+                        PX4_WARN("SE3 fault: Position mode accepted");
+                        _fault_response = FaultResponse::PositionAccepted;
+
+                    } else {
+                        PX4_WARN("SE3 fault: Position mode rejected (%d); leaving to PX4 failsafe", (int)ack.result);
+                        report_fault_to_commander();
+                    }
+
+                    break;
+                }
+            }
+
+            if (_fault_response == FaultResponse::PositionRequested &&
+                hrt_elapsed_time(&_position_request_time) > kHandoffAckTimeout) {
+                PX4_WARN("SE3 fault: no Position mode reply; leaving to PX4 failsafe");
+                report_fault_to_commander();
+            }
+        }
+
+        publish_neutral_setpoint();
+    }
+
+    // Zero body rates and hover thrust replace the last SE3 command until
+    // Commander deselects SE3; mc_rate_control otherwise keeps tracking the
+    // last published setpoint. Rotation is stopped, not levelled. Nothing is
+    // published unless airborne.
+    void publish_neutral_setpoint()
+    {
+        if (!_landed_received || !flying()) {
+            return;
+        }
+
+        const float hover = _param_hover.get();
+        const bool hover_valid = std::isfinite(hover) && hover > 0.0f && hover < 1.0f;
+
+        vehicle_rates_setpoint_s setpoint{};
+        setpoint.timestamp = hrt_absolute_time();
+        setpoint.thrust_body[2] = -(hover_valid ? hover : _last_thrust);
+        _rate_setpoint_pub.publish(setpoint);
     }
 
     // The shell supplies a named trajectory and a parameter snapshot.
@@ -362,16 +531,8 @@ private:
         // disabled; lack of a reply would cause a different timeout path.
         arming_check_request_s request{};
         if (_arming_check_id >= 0 && _arming_request_sub.update(&request)) {
-            arming_check_reply_s reply{};
-            reply.timestamp = hrt_absolute_time();
-            reply.request_id = request.request_id;
-            reply.registration_id = static_cast<uint8_t>(_arming_check_id);
-            reply.can_arm_and_run = valid;
-            reply.mode_req_angular_velocity = true;
-            reply.mode_req_attitude = true;
-            reply.mode_req_local_position = true;
-            reply.mode_req_prevent_arming = true; // Airborne handoff only, no takeoff/arm.
-            _arming_reply_pub.publish(reply);
+            _last_arming_request_id = request.request_id;
+            publish_arming_reply(request.request_id, valid);
         }
 
         // No publication at all while another flight mode owns the setpoint.
@@ -391,18 +552,35 @@ private:
             // Keep faults latched until disarm, including after a mode change.
             if (_status.arming_state == vehicle_status_s::ARMING_STATE_DISARMED) {
                 _faulted = false;
+                _fault_response = FaultResponse::None;
             }
 
             return;
         }
 
-        // Do not resume control just because a stale sample recovered or
-        // the estimator briefly became valid again. Force a mode exit.
+        // A latched fault is never cleared in flight: a recovered sample or a
+        // briefly valid estimate does not resume control.
+        if (_faulted) {
+            continue_fault_handoff();
+            return;
+        }
+
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+        const int32_t injected = _injected_fault.load();
+
+        if (injected != static_cast<int32_t>(FaultClass::None)) {
+            _injected_fault.store(static_cast<int32_t>(FaultClass::None));
+            enter_fault(static_cast<FaultClass>(injected), "injected for SITL testing");
+            return;
+        }
+#endif
+
         if (!valid) {
-            clear_trajectory_request();
-            _active.store(false);
-            _executing.store(false);
-            _faulted = true;
+            // Only invalid SE3 configuration with otherwise valid flight state
+            // is a controller fault; everything else is left to PX4.
+            const bool controller_fault = _landed_received && flying() && state_valid() && !configured();
+            enter_fault(controller_fault ? FaultClass::Controller : FaultClass::State,
+                        controller_fault ? "invalid SE3 configuration" : "vehicle state not valid for SE3");
             return;
         }
 
@@ -418,14 +596,12 @@ private:
         }
 
         // Estimator-frame discontinuities are not silently interpreted as
-        // trajectory tracking errors. Commander must reject this mode.
+        // trajectory tracking errors. The estimate itself remains valid, so
+        // this is a controller fault: PX4 Position control handles resets.
         if (_xy_reset_counter != _position.xy_reset_counter ||
             _z_reset_counter != _position.z_reset_counter ||
             _quat_reset_counter != _attitude.quat_reset_counter) {
-            clear_trajectory_request();
-            _active.store(false);
-            _executing.store(false);
-            _faulted = true;
+            enter_fault(FaultClass::Controller, "estimator reset");
             return;
         }
 
@@ -474,10 +650,7 @@ private:
         trajectory_generator::Reference reference{};
 
         if (!trajectory_generator::sample(_sequence, elapsed_s, _origin, reference)) {
-            _active.store(false);
-            _executing.store(false);
-            clear_trajectory_request();
-            _faulted = true;
+            enter_fault(FaultClass::Controller, "trajectory sampling failed");
             return;
         }
 
@@ -517,10 +690,7 @@ private:
 
         if (!se3_control::Controller::compute_geometry(state, reference, translation_gains, geometric) ||
             !se3_control::AttitudeLaws::body_rate(state, geometric.desired_attitude, attitude_gains, body_rate)) {
-            _active.store(false);
-            _executing.store(false);
-            clear_trajectory_request();
-            _faulted = true;
+            enter_fault(FaultClass::Controller, "geometric control computation failed");
             return;
         }
 
@@ -529,10 +699,7 @@ private:
         const float rate_limit = _param_rate_max.get();
 
         if (!std::isfinite(thrust) || !body_rate.isAllFinite() || !std::isfinite(rate_limit)) {
-            _active.store(false);
-            _executing.store(false);
-            clear_trajectory_request();
-            _faulted = true;
+            enter_fault(FaultClass::Controller, "non-finite rate or thrust command");
             return;
         }
 
@@ -545,6 +712,7 @@ private:
         setpoint.thrust_body[1] = 0.f;
         setpoint.thrust_body[2] = -fminf(fmaxf(thrust, 0.0f), 1.0f);
         _rate_setpoint_pub.publish(setpoint);
+        _last_thrust = -setpoint.thrust_body[2];
 
         // Expose the exact geometric attitude reference through the standard
         // PX4 observation topic. SE3 still owns body-rate control: Commander
@@ -600,13 +768,28 @@ private:
         _trajectory_status_pub.publish(record);
     }
 
+    // Readiness is the conjunction of the vehicle, estimate and configuration
+    // predicates below. They are separated only to classify faults.
     bool ready() const
     {
+        const bool supported_airframe = _param_autostart.get() != 6010 && _param_autostart.get() != 6002;
+
+        return _mode_id >= 0 && !_faulted && _landed_received && flying() &&
+               supported_airframe && state_valid() && configured();
+    }
+
+    bool flying() const
+    {
+        return _status.arming_state == vehicle_status_s::ARMING_STATE_ARMED &&
+               !_landed.landed && !_status.failsafe &&
+               _status.vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING &&
+               !_status.is_vtol;
+    }
+
+    // Finite, valid and fresh estimator outputs.
+    bool state_valid() const
+    {
         const hrt_abstime now = hrt_absolute_time();
-        const bool flying = _status.arming_state == vehicle_status_s::ARMING_STATE_ARMED &&
-                            !_landed.landed && !_status.failsafe &&
-                            _status.vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING &&
-                            !_status.is_vtol;
         const bool valid_position = _position.xy_valid && _position.z_valid &&
                                     _position.v_xy_valid && _position.v_z_valid &&
                                     std::isfinite(_position.x) && std::isfinite(_position.y) &&
@@ -621,25 +804,26 @@ private:
                              _attitude.q[3] * _attitude.q[3];
         const bool valid_gyro = std::isfinite(_gyro.xyz[0]) && std::isfinite(_gyro.xyz[1]) &&
                                 std::isfinite(_gyro.xyz[2]);
-        const bool supported_airframe = _param_autostart.get() != 6010 && _param_autostart.get() != 6002;
-        const bool configured = _param_enable.get() == 1 &&
-                                _param_kx.get() > 0.0f && _param_kv.get() > 0.0f &&
-                                _param_krx.get() > 0.0f && _param_kry.get() > 0.0f &&
-                                _param_krz.get() > 0.0f &&
-                                _param_rate_max.get() > 0.0f &&
-                                _param_hover.get() > 0.0f && _param_hover.get() < 1.0f &&
-                                std::isfinite(_param_kx.get()) && std::isfinite(_param_kv.get()) &&
-                                std::isfinite(_param_krx.get()) && std::isfinite(_param_kry.get()) &&
-                                std::isfinite(_param_krz.get()) &&
-                                std::isfinite(_param_rate_max.get()) && std::isfinite(_param_hover.get());
 
-        return _mode_id >= 0 && !_faulted && _landed_received && flying &&
-               supported_airframe &&
-               valid_position && valid_attitude &&
-               norm2 > 0.9f && norm2 < 1.1f && valid_gyro && configured &&
+        return valid_position && valid_attitude &&
+               norm2 > 0.9f && norm2 < 1.1f && valid_gyro &&
                fresh(now, _position.timestamp, kPositionTimeout) &&
                fresh(now, _attitude.timestamp, kAttitudeTimeout) &&
                fresh(now, _gyro.timestamp, kGyroTimeout);
+    }
+
+    bool configured() const
+    {
+        return _param_enable.get() == 1 &&
+               _param_kx.get() > 0.0f && _param_kv.get() > 0.0f &&
+               _param_krx.get() > 0.0f && _param_kry.get() > 0.0f &&
+               _param_krz.get() > 0.0f &&
+               _param_rate_max.get() > 0.0f &&
+               _param_hover.get() > 0.0f && _param_hover.get() < 1.0f &&
+               std::isfinite(_param_kx.get()) && std::isfinite(_param_kv.get()) &&
+               std::isfinite(_param_krx.get()) && std::isfinite(_param_kry.get()) &&
+               std::isfinite(_param_krz.get()) &&
+               std::isfinite(_param_rate_max.get()) && std::isfinite(_param_hover.get());
     }
 
     // Commander registration, flight-mode state, and rate setpoint interfaces.
@@ -689,7 +873,18 @@ private:
     uint32_t _run_id{0};
     uint32_t _active_plan_crc{0};
     px4::atomic_int32_t _registered_mode_id{-1};
-    uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)};
+    uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)}; // CLI thread.
+
+    // Fault handoff (work-queue thread only, except the SITL injection flag).
+    uORB::Publication<vehicle_command_s> _handoff_command_pub{ORB_ID(vehicle_command)};
+    uORB::Subscription _command_ack_sub{ORB_ID(vehicle_command_ack)};
+    FaultResponse _fault_response{FaultResponse::None};
+    hrt_abstime _position_request_time{0};
+    uint8_t _last_arming_request_id{0};
+    float _last_thrust{0.0f};
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+    px4::atomic<int32_t> _injected_fault{static_cast<int32_t>(FaultClass::None)};
+#endif
     px4::atomic_bool _active{false};
     px4::atomic_bool _executing{false};
     px4::atomic_bool _completed{false};
