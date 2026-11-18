@@ -67,6 +67,24 @@ struct NormalizedTorqueOutput
   Vector3 torque{};
 };
 
+// Physical geometric attitude gains (SE3_CTRL = PHYSICAL), per body axis:
+// K_R [N m/rad] and K_Omega [N m s/rad].
+struct PhysicalAttitudeGains
+{
+  Vector3 attitude{};
+  Vector3 angular_velocity{};
+};
+
+// Terms of the physical Lee moment [N m] in the current body FRD frame.
+struct PhysicalMomentOutput
+{
+  Vector3 attitude_feedback{};          // -K_R e_R
+  Vector3 angular_velocity_feedback{};  // -K_Omega e_Omega
+  Vector3 gyroscopic{};                 // Omega x J Omega
+  Vector3 inertial_feedforward{};       // J alpha_ff
+  Vector3 moment{};
+};
+
 // First/second derivatives of the desired specific force in NED.
 // Units are m/s^3 and m/s^4; these drive desired-attitude dynamics.
 struct ForceDerivatives
@@ -77,8 +95,9 @@ struct ForceDerivatives
 
 // Common geometric reference calculated before any attitude law.
 //
-// The runtime currently uses only the body-rate law. The normalized torque law
-// in AttitudeLaws uses the same reference but is not selected by the runtime.
+// The runtime uses the body-rate law (SE3_CTRL = RATE_PX4) or the physical
+// moment law (SE3_CTRL = PHYSICAL). The normalized torque law in AttitudeLaws
+// uses the same reference but is not selected by the runtime.
 // Collective acceleration is the positive body-Z projection of A/m.
 struct GeometricOutput
 {

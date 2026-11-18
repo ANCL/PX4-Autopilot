@@ -55,6 +55,88 @@ parameters:
             min: 0.1
             max: 12.0
             default: 3.0
+        SE3_CTRL:
+            description:
+                short: Native SE3 attitude control path
+                long: |
+                    RATE_PX4: body-rate and normalized-thrust setpoints for the
+                    PX4 rate controller and native allocation (unchanged path).
+                    PHYSICAL: physical Lee moment and thrust in SI units at the
+                    gyro rate, allocated in rotor-thrust space with the SE3_MODEL
+                    model; the PX4 rate controller is disabled while SE3 is
+                    selected. Requires THR_MDL_FAC = 0 and the model's airframe
+                    and output parameters. Fixed until reboot.
+            type: enum
+            values:
+                0: RATE_PX4
+                1: PHYSICAL
+            reboot_required: true
+            default: 0
+        SE3_MODEL:
+            description:
+                short: Native SE3 physical vehicle model
+                long: |
+                    Mass, inertia, rotor geometry and thrust curves used by
+                    SE3_CTRL = PHYSICAL. Fixed until reboot.
+            type: enum
+            values:
+                0: Gazebo F450 (4022_gz_f450)
+            reboot_required: true
+            default: 0
+        SE3_PKRX:
+            description:
+                short: Native SE3 physical roll attitude gain
+            type: float
+            unit: Nm/rad
+            min: 0.0
+            max: 50.0
+            decimal: 3
+            default: 5.0
+        SE3_PKRY:
+            description:
+                short: Native SE3 physical pitch attitude gain
+            type: float
+            unit: Nm/rad
+            min: 0.0
+            max: 50.0
+            decimal: 3
+            default: 5.0
+        SE3_PKRZ:
+            description:
+                short: Native SE3 physical yaw attitude gain
+            type: float
+            unit: Nm/rad
+            min: 0.0
+            max: 50.0
+            decimal: 3
+            default: 1.1
+        SE3_PKWX:
+            description:
+                short: Native SE3 physical roll angular-rate gain
+            type: float
+            unit: Nm/(rad/s)
+            min: 0.0
+            max: 10.0
+            decimal: 3
+            default: 0.53
+        SE3_PKWY:
+            description:
+                short: Native SE3 physical pitch angular-rate gain
+            type: float
+            unit: Nm/(rad/s)
+            min: 0.0
+            max: 10.0
+            decimal: 3
+            default: 0.53
+        SE3_PKWZ:
+            description:
+                short: Native SE3 physical yaw angular-rate gain
+            type: float
+            unit: Nm/(rad/s)
+            min: 0.0
+            max: 10.0
+            decimal: 3
+            default: 0.35
     - group: Native Trajectory
       definitions:
         TRJ_SP_X:

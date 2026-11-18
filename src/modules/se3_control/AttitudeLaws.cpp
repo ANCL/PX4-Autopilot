@@ -1,4 +1,4 @@
-// Geometric SO(3) body-rate and normalized torque control.
+// Geometric SO(3) body-rate, physical moment and normalized torque control.
 //
 // Geometric attitude error (Lee et al., 2010):
 //
@@ -133,6 +133,59 @@ bool AttitudeLaws::body_rate(
   }
 
   rate_setpoint = candidate;
+  return true;
+}
+
+bool AttitudeLaws::physical(
+  const State & state,
+  const DesiredAttitudeDynamics & desired,
+  const matrix::Matrix3f & inertia,
+  const PhysicalAttitudeGains & gains,
+  PhysicalMomentOutput & output)
+{
+  if (!nonnegative(gains.attitude) ||
+      !nonnegative(gains.angular_velocity) ||
+      !inertia.isAllFinite()) {
+    return false;
+  }
+
+  AttitudeErrors errors{};
+
+  if (!compute_errors(state, desired, errors)) {
+    return false;
+  }
+
+  // M = -K_R e_R - K_Omega e_Omega + Omega x J Omega + J alpha_ff
+  //
+  // alpha_ff = -Omega x (R^T R_d Omega_d) + R^T R_d dot(Omega_d), so the last
+  // term equals Lee's -J (hat(Omega) R^T R_d Omega_d - R^T R_d dot(Omega_d)).
+  PhysicalMomentOutput candidate{};
+
+  candidate.attitude_feedback =
+    -component_product(gains.attitude, errors.attitude);
+
+  candidate.angular_velocity_feedback =
+    -component_product(
+      gains.angular_velocity,
+      errors.angular_velocity);
+
+  candidate.gyroscopic =
+    state.angular_velocity.cross(inertia * state.angular_velocity);
+
+  candidate.inertial_feedforward =
+    inertia * errors.acceleration_feedforward;
+
+  candidate.moment =
+    candidate.attitude_feedback +
+    candidate.angular_velocity_feedback +
+    candidate.gyroscopic +
+    candidate.inertial_feedforward;
+
+  if (!candidate.moment.isAllFinite()) {
+    return false;
+  }
+
+  output = candidate;
   return true;
 }
 

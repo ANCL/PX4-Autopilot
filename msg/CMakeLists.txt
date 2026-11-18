@@ -199,7 +199,9 @@ set(msg_files
 	SensorMag.msg
 	SensorOpticalFlow.msg
 	SensorPreflightMag.msg
+	Se3AllocationStatus.msg
 	Se3TrajectoryStatus.msg
+	Se3WrenchSetpoint.msg
 	SensorSelection.msg
 	SensorsStatus.msg
 	SensorsStatusImu.msg

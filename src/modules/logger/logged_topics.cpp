@@ -130,6 +130,8 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("tiltrotor_extra_controls", 100);
 	add_topic("trajectory_setpoint", 200);
 	add_topic("se3_trajectory_status", 10);
+	add_topic("se3_wrench_setpoint", 10);
+	add_topic("se3_allocation_status", 10);
 	add_topic("transponder_report");
 	add_topic("vehicle_acceleration", 50);
 	add_topic("vehicle_air_data", 200);

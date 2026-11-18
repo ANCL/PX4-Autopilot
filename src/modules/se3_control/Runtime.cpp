@@ -4,6 +4,13 @@
 // mc_rate_control tracks commanded body rates; control_allocator produces
 // actuator commands. Commander manages flight-mode transitions and failsafes.
 //
+// SE3_CTRL = PHYSICAL (fixed at boot) replaces the rate setpoint with the
+// physical Lee wrench: Run() keeps the same 100 Hz reference, hold, trajectory
+// and fault logic, and a gyro-triggered inner loop (run_inner()) computes the
+// moment for every new angular-velocity sample and publishes
+// se3_wrench_setpoint, which control_allocator allocates in rotor-thrust
+// space. The registered mode then disables the PX4 rate loop.
+//
 // Setpoints are published only while this registered flight mode is active.
 // Fault handling (Position-mode request or native PX4 failsafe) is described
 // at enter_fault().
@@ -16,6 +23,13 @@
 #include <px4_platform_common/atomic.h>
 #include <uORB/topics/vehicle_command.h>
 #include <uORB/topics/vehicle_command_ack.h>
+#include <lib/perf/perf_counter.h>
+#include <lib/se3_physical/PhysicalModel.hpp>
+#include <uORB/SubscriptionCallback.hpp>
+#include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/se3_allocation_status.h>
+#include <uORB/topics/se3_wrench_setpoint.h>
+#include <uORB/topics/vehicle_thrust_setpoint.h>
 
 #include <drivers/drv_hrt.h>
 #include <px4_platform_common/module.h>
@@ -44,6 +58,7 @@
 
 #include <matrix/matrix/math.hpp>
 
+#include <float.h>
 #include <cmath>
 #include <pthread.h>
 #include <cstdint>
@@ -61,6 +76,16 @@ constexpr hrt_abstime kGyroTimeout = 100_ms;
 
 // Commander normally acknowledges a mode request within one 10 ms loop.
 constexpr hrt_abstime kHandoffAckTimeout = 100_ms;
+
+// PHYSICAL inner loop: the 100 Hz reference may miss at most two updates, and
+// the attitude must come from the current estimator output (>= 200 Hz).
+constexpr hrt_abstime kReferenceTimeout = 30_ms;
+constexpr hrt_abstime kInnerAttitudeTimeout = 20_ms;
+
+// control_allocator answers every wrench; silence means it does not accept them.
+constexpr hrt_abstime kAllocationTimeout = 50_ms;
+
+enum class ControlPath : int32_t { RatePx4 = 0, Physical = 1 };
 
 bool fresh(hrt_abstime now, hrt_abstime stamp, hrt_abstime limit)
 {
@@ -108,6 +133,11 @@ public:
             unregister.mode_executor_id = -1;
             _unregister_pub.publish(unregister);
         }
+
+        delete _inner_gyro_sub; // Unregisters the callback before its work item goes.
+        delete _inner;
+        perf_free(_inner_perf);
+        perf_free(_inner_interval_perf);
     }
 
     bool init()
@@ -121,6 +151,14 @@ public:
 
         updateParams();
         trajectory_generator::mark_parameters_used();
+
+        // The control path and physical model are fixed until reboot.
+        _physical = _param_ctrl.get() == static_cast<int32_t>(ControlPath::Physical);
+
+        if (_physical && !init_physical()) {
+            return false;
+        }
+
         _registration_request_id = hrt_absolute_time();
 
         register_ext_component_request_s request{};
@@ -150,6 +188,17 @@ public:
             "none", "Position requested", "Position accepted", "PX4 failsafe"
         };
         PX4_INFO("fault response: %s", responses[static_cast<int>(_fault_response)]);
+
+        if (_physical) {
+            PX4_INFO("control: PHYSICAL (%s), parameters %s", _model.name,
+                     _physical_parameters_ok ? "match model" : "DO NOT match model");
+            perf_print_counter(_inner_perf);
+            perf_print_counter(_inner_interval_perf);
+
+        } else {
+            PX4_INFO("control: RATE_PX4");
+        }
+
         return 0;
     }
 
@@ -227,7 +276,7 @@ PX4 retains rate PID, allocator, and output/flight-safety ownership.
         PRINT_MODULE_USAGE_COMMAND("trajectory");
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
         PRINT_MODULE_USAGE_COMMAND_DESCR("fault", "SITL test only: inject a fault (requires SYS_FAILURE_EN=1)");
-        PRINT_MODULE_USAGE_ARG("controller|state", "Fault class", false);
+        PRINT_MODULE_USAGE_ARG("controller|state|allocation", "Fault class (allocation: PHYSICAL wrench with an unknown model)", false);
 #endif
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
@@ -296,8 +345,13 @@ private:
         } else if (std::strcmp(kind, "state") == 0) {
             _injected_fault.store(static_cast<int32_t>(FaultClass::State));
 
+        } else if (std::strcmp(kind, "allocation") == 0 && _physical) {
+            // Real allocator rejection path: wrenches name an unknown model
+            // until the resulting fault is detected.
+            _inject_unknown_model.store(true);
+
         } else {
-            PX4_ERR("fault class must be controller or state");
+            PX4_ERR("fault class must be controller, state or (PHYSICAL) allocation");
             return PX4_ERROR;
         }
 
@@ -335,6 +389,9 @@ private:
         _active.store(false);
         _executing.store(false);
         _faulted = true;
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+        _inject_unknown_model.store(false);
+#endif
 
         if (fault == FaultClass::Controller) {
             PX4_WARN("SE3 fault: %s; requesting Position mode", reason);
@@ -479,6 +536,12 @@ private:
         if (should_exit()) {
             clear_trajectory_request();
             ScheduleClear();
+
+            if (_physical) {
+                _inner_gyro_sub->unregisterCallback();
+                _inner->clear();
+            }
+
             exit_and_cleanup();
             return;
         }
@@ -487,6 +550,10 @@ private:
             parameter_update_s update{};
             _parameter_update_sub.copy(&update);
             updateParams();
+
+            if (_physical) {
+                _physical_parameters_ok = physical_parameters_match();
+            }
         }
 
         // Commander assigns both IDs. Matching the request ID prevents
@@ -508,7 +575,9 @@ private:
                     // Only the PX4 rate loop and allocator are enabled.
                     // Commander derives multicopter-position control from
                     // the position/velocity/altitude flags (all remain false).
-                    config.flag_control_rates_enabled = true;
+                    // PHYSICAL leaves only the allocator enabled: its moment
+                    // replaces the rate loop (as in Offboard thrust/torque).
+                    config.flag_control_rates_enabled = !_physical;
                     config.flag_control_allocation_enabled = true;
                     _mode_control_config_pub.publish(config);
                     PX4_INFO("registered mode %d (arming check %d)", (int)_mode_id, (int)_arming_check_id);
@@ -536,8 +605,11 @@ private:
         }
 
         // No publication at all while another flight mode owns the setpoint.
+        // RATE_PX4 requires the PX4 rate loop; PHYSICAL requires it disabled.
+        const bool rate_loop = _physical ? !_control_mode.flag_control_rates_enabled :
+                               _control_mode.flag_control_rates_enabled;
         const bool selected = _mode_id >= 0 && _status.nav_state == _mode_id &&
-                              _control_mode.flag_control_rates_enabled &&
+                              rate_loop &&
                               !_control_mode.flag_control_attitude_enabled &&
                               !_control_mode.flag_multicopter_position_control_enabled &&
                               _control_mode.flag_control_allocation_enabled;
@@ -548,6 +620,8 @@ private:
             _executing.store(false);
             _completed.store(false);
             _hold_requested.store(false);
+
+            _reference.valid = false;
 
             // Keep faults latched until disarm, including after a mode change.
             if (_status.arming_state == vehicle_status_s::ARMING_STATE_DISARMED) {
@@ -592,6 +666,7 @@ private:
             _xy_reset_counter = _position.xy_reset_counter;
             _z_reset_counter = _position.z_reset_counter;
             _quat_reset_counter = _attitude.quat_reset_counter;
+            _active_time = hrt_absolute_time();
             _active.store(true);
         }
 
@@ -602,6 +677,15 @@ private:
             _z_reset_counter != _position.z_reset_counter ||
             _quat_reset_counter != _attitude.quat_reset_counter) {
             enter_fault(FaultClass::Controller, "estimator reset");
+            return;
+        }
+
+        // PHYSICAL relies on control_allocator accepting its wrench with all
+        // model rotors running; otherwise PX4 allocation takes over.
+        const char *allocation_problem = _physical ? physical_allocation_problem() : nullptr;
+
+        if (allocation_problem != nullptr) {
+            enter_fault(FaultClass::Controller, allocation_problem);
             return;
         }
 
@@ -711,6 +795,21 @@ private:
         setpoint.thrust_body[0] = 0.f;
         setpoint.thrust_body[1] = 0.f;
         setpoint.thrust_body[2] = -fminf(fmaxf(thrust, 0.0f), 1.0f);
+
+        if (_physical) {
+            // The inner loop uses this reference until the next update. The
+            // rate setpoint is ignored by mc_rate_control while SE3 owns
+            // allocation; zero rates make it a neutral command for the first
+            // PX4 rate-loop cycle after SE3 is deselected.
+            _reference.specific_force = geometric.translation.specific_force;
+            _reference.desired = geometric.desired_attitude;
+            _reference.timestamp = setpoint.timestamp;
+            _reference.valid = true;
+            setpoint.roll = 0.f;
+            setpoint.pitch = 0.f;
+            setpoint.yaw = 0.f;
+        }
+
         _rate_setpoint_pub.publish(setpoint);
         _last_thrust = -setpoint.thrust_body[2];
 
@@ -768,6 +867,259 @@ private:
         _trajectory_status_pub.publish(record);
     }
 
+    // PHYSICAL setup at boot: model, its parameter dependencies and the
+    // gyro-triggered inner loop on Run()'s work queue (same thread, so the
+    // inner loop shares state with Run() without locking).
+    bool init_physical()
+    {
+        _model_id = static_cast<uint8_t>(_param_model.get());
+
+        if (!se3_physical::get_model(_model_id, _model) || !se3_physical::valid(_model)) {
+            PX4_ERR("SE3_MODEL %d is not a valid physical model", (int)_param_model.get());
+            return false;
+        }
+
+        _physical_parameters_ok = physical_parameters_match();
+        _inner = new InnerLoop(*this);
+        _inner_gyro_sub = _inner ? new uORB::SubscriptionCallbackWorkItem(_inner, ORB_ID(vehicle_angular_velocity)) : nullptr;
+
+        if (_inner_gyro_sub == nullptr || !_inner_gyro_sub->registerCallback()) {
+            PX4_ERR("SE3 inner loop start failed");
+            return false;
+        }
+
+        _inner_perf = perf_alloc(PC_ELAPSED, MODULE_NAME": physical inner");
+        _inner_interval_perf = perf_alloc(PC_INTERVAL, MODULE_NAME": physical inner interval");
+        PX4_INFO("PHYSICAL control with model %s", _model.name);
+        return true;
+    }
+
+    // The model's thrust curve and geometry hold only for its airframe and
+    // output mapping, and only if PX4 applies no thrust curve of its own.
+    bool physical_parameters_match() const
+    {
+        float thrust_model_factor = NAN;
+
+        // FunctionMotors applies its curve only for a factor above FLT_EPSILON.
+        if (param_get(param_find("THR_MDL_FAC"), &thrust_model_factor) != PX4_OK ||
+            !(fabsf(thrust_model_factor) <= FLT_EPSILON)) {
+            return false;
+        }
+
+        for (int i = 0; i < _model.required_count; ++i) {
+            const param_t handle = param_find(_model.required[i].name);
+            int32_t value = 0;
+
+            if (handle == PARAM_INVALID || param_get(handle, &value) != PX4_OK || value != _model.required[i].value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    se3_control::PhysicalAttitudeGains physical_gains() const
+    {
+        se3_control::PhysicalAttitudeGains gains{};
+        gains.attitude = se3_control::Vector3{_param_pkrx.get(), _param_pkry.get(), _param_pkrz.get()};
+        gains.angular_velocity = se3_control::Vector3{_param_pkwx.get(), _param_pkwy.get(), _param_pkwz.get()};
+        return gains;
+    }
+
+    bool physical_configured() const
+    {
+        const se3_control::PhysicalAttitudeGains gains = physical_gains();
+
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(gains.attitude(axis)) || gains.attitude(axis) <= 0.0f ||
+                !std::isfinite(gains.angular_velocity(axis)) || gains.angular_velocity(axis) <= 0.0f) {
+                return false;
+            }
+        }
+
+        return _physical_parameters_ok;
+    }
+
+    // Checked every Run() while PHYSICAL SE3 is active; returns the fault
+    // reason, or nullptr if control_allocator is allocating the wrench.
+    const char *physical_allocation_problem()
+    {
+        se3_allocation_status_s status{};
+
+        if (_allocation_status_sub.update(&status)) {
+            _allocation_status = status;
+        }
+
+        failure_detector_status_s failure{};
+
+        if (_failure_detector_sub.update(&failure)) {
+            _motor_failure = failure.fd_motor;
+        }
+
+        if (_motor_failure) {
+            return "motor failure detected";
+        }
+
+        // Only allocator replies since this activation count.
+        if (_allocation_status.timestamp >= _active_time) {
+            if (!_allocation_status.compatible) {
+                return "physical allocation incompatible with model";
+            }
+
+            if (!_allocation_status.valid) {
+                return "physical allocation without all rotors";
+            }
+        }
+
+        const hrt_abstime now = hrt_absolute_time();
+
+        if (now - _active_time > kAllocationTimeout &&
+            !fresh(now, _allocation_status.timestamp, kAllocationTimeout)) {
+            return "control_allocator not allocating the SE3 wrench";
+        }
+
+        return nullptr;
+    }
+
+    // Gyro-triggered PHYSICAL inner loop: one wrench per new angular-velocity
+    // sample while this mode owns allocation. A sample is never used twice.
+    void run_inner()
+    {
+        vehicle_angular_velocity_s gyro{};
+
+        if (!_inner_gyro_sub->update(&gyro) || gyro.timestamp_sample <= _inner_last_sample) {
+            return;
+        }
+
+        _inner_last_sample = gyro.timestamp_sample;
+        perf_count(_inner_interval_perf);
+        perf_begin(_inner_perf);
+
+        // Fresh copies: ownership must follow Commander at gyro rate, not at
+        // Run()'s 100 Hz, so SE3 and the PX4 rate loop never both command.
+        _inner_status_sub.update(&_inner_status);
+        _inner_control_mode_sub.update(&_inner_control_mode);
+        _inner_attitude_sub.update(&_inner_attitude);
+
+        if (owns_allocation()) {
+            publish_wrench(gyro);
+        }
+
+        perf_end(_inner_perf);
+    }
+
+    bool owns_allocation() const
+    {
+        return _mode_id >= 0 && _inner_status.nav_state == _mode_id &&
+               _inner_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED &&
+               !_inner_control_mode.flag_control_rates_enabled &&
+               !_inner_control_mode.flag_control_attitude_enabled &&
+               !_inner_control_mode.flag_multicopter_position_control_enabled &&
+               _inner_control_mode.flag_control_allocation_enabled;
+    }
+
+    // Lee wrench from the latest 100 Hz reference and the newest attitude and
+    // gyro sample. On failure a fault is latched and false returned.
+    bool lee_wrench(const se3_control::State &state, float &thrust, se3_control::Vector3 &moment)
+    {
+        const hrt_abstime now = hrt_absolute_time();
+
+        if (!fresh(now, _inner_attitude.timestamp, kInnerAttitudeTimeout) ||
+            !state.attitude.isAllFinite() || !state.angular_velocity.isAllFinite()) {
+            enter_fault(FaultClass::State, "attitude or angular velocity not valid for SE3");
+            return false;
+        }
+
+        if (!_reference.valid || !fresh(now, _reference.timestamp, kReferenceTimeout)) {
+            enter_fault(FaultClass::Controller, "SE3 reference not updated");
+            return false;
+        }
+
+        // Lee collective thrust f = -m (A/m) . (R e3) with the current attitude.
+        const se3_control::Vector3 body_z{state.attitude(0, 2), state.attitude(1, 2), state.attitude(2, 2)};
+        const float collective = -(_reference.specific_force * body_z);
+        se3_control::PhysicalMomentOutput output{};
+
+        if (!std::isfinite(collective) || collective <= 0.0f ||
+            !se3_control::AttitudeLaws::physical(state, _reference.desired, _model.inertia,
+                    physical_gains(), output)) {
+            enter_fault(FaultClass::Controller, "physical wrench computation failed");
+            return false;
+        }
+
+        thrust = _model.mass * collective;
+        moment = output.moment;
+        return true;
+    }
+
+    void publish_wrench(const vehicle_angular_velocity_s &gyro)
+    {
+        se3_control::State state{};
+        state.angular_velocity = se3_control::Vector3{gyro.xyz[0], gyro.xyz[1], gyro.xyz[2]};
+        state.attitude = matrix::Dcmf{matrix::Quatf{_inner_attitude.q}};
+
+        float thrust = 0.0f;
+        se3_control::Vector3 moment{};
+        const bool lee = _active.load() && !_faulted && lee_wrench(state, thrust, moment);
+
+        if (!lee) {
+            // Neutral wrench while SE3 is selected without a valid Lee
+            // reference (before the first reference, or after a fault until
+            // Commander changes mode): with R_d = R and Omega_d = 0 the Lee
+            // moment is rate damping plus Omega x J Omega, so rotation is
+            // stopped, not levelled. Weight-compensating thrust in the air,
+            // idle on the ground. Without a gyro sample nothing is published.
+            if (!state.angular_velocity.isAllFinite()) {
+                return;
+            }
+
+            if (!state.attitude.isAllFinite()) {
+                state.attitude.setIdentity(); // R_d = R: e_R = 0 for any R.
+            }
+
+            se3_control::DesiredAttitudeDynamics current{};
+            current.attitude = state.attitude;
+            se3_control::PhysicalMomentOutput output{};
+
+            if (!se3_control::AttitudeLaws::physical(state, current, _model.inertia, physical_gains(), output)) {
+                return;
+            }
+
+            moment = output.moment;
+            thrust = _landed.landed ? 0.0f : _model.mass * kGravity;
+        }
+
+        se3_wrench_setpoint_s setpoint{};
+        setpoint.timestamp_sample = gyro.timestamp_sample;
+        setpoint.nav_state = static_cast<uint8_t>(_mode_id);
+        setpoint.model = _model_id;
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+
+        if (_inject_unknown_model.load()) {
+            setpoint.model = 0xff;
+        }
+
+#endif
+        setpoint.neutral = !lee;
+        setpoint.thrust = thrust;
+
+        for (int axis = 0; axis < 3; ++axis) {
+            setpoint.moment[axis] = moment(axis);
+        }
+
+        setpoint.timestamp = hrt_absolute_time();
+        _wrench_pub.publish(setpoint);
+
+        // Normalized collective for the land detector and other observers
+        // (the allocator ignores it in this path), on the same hover-scaled
+        // convention as the RATE_PX4 thrust setpoint.
+        vehicle_thrust_setpoint_s observation{};
+        observation.timestamp_sample = gyro.timestamp_sample;
+        observation.xyz[2] = -fminf(fmaxf(_param_hover.get() * thrust / (_model.mass * kGravity), 0.0f), 1.0f);
+        observation.timestamp = setpoint.timestamp;
+        _thrust_observation_pub.publish(observation);
+    }
+
     // Readiness is the conjunction of the vehicle, estimate and configuration
     // predicates below. They are separated only to classify faults.
     bool ready() const
@@ -823,8 +1175,33 @@ private:
                std::isfinite(_param_kx.get()) && std::isfinite(_param_kv.get()) &&
                std::isfinite(_param_krx.get()) && std::isfinite(_param_kry.get()) &&
                std::isfinite(_param_krz.get()) &&
-               std::isfinite(_param_rate_max.get()) && std::isfinite(_param_hover.get());
+               std::isfinite(_param_rate_max.get()) && std::isfinite(_param_hover.get()) &&
+               (!_physical || physical_configured());
     }
+
+    // PHYSICAL inner loop work item. It runs on Run()'s work queue, so the
+    // two never execute concurrently.
+    class InnerLoop final : public px4::WorkItem
+    {
+    public:
+        explicit InnerLoop(Se3Runtime &runtime) :
+            px4::WorkItem("se3_control_inner", px4::wq_configurations::rate_ctrl), _runtime(runtime) {}
+
+        void Run() override { _runtime.run_inner(); }
+        void clear() { ScheduleClear(); }
+
+    private:
+        Se3Runtime &_runtime;
+    };
+
+    // Reference computed by Run() and held by the inner loop until the next.
+    struct PhysicalReference
+    {
+        se3_control::Vector3 specific_force{}; // A/m in NED [m/s^2].
+        se3_control::DesiredAttitudeDynamics desired{};
+        hrt_abstime timestamp{0};
+        bool valid{false};
+    };
 
     // Commander registration, flight-mode state, and rate setpoint interfaces.
     uORB::Publication<register_ext_component_request_s> _register_pub{ORB_ID(register_ext_component_request)};
@@ -885,6 +1262,34 @@ private:
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
     px4::atomic<int32_t> _injected_fault{static_cast<int32_t>(FaultClass::None)};
 #endif
+    // PHYSICAL control (SE3_CTRL = 1); all unused with RATE_PX4.
+    bool _physical{false};
+    uint8_t _model_id{0};
+    se3_physical::Model _model{};
+    bool _physical_parameters_ok{false};
+    PhysicalReference _reference{};
+    hrt_abstime _active_time{0};
+    InnerLoop *_inner{nullptr};
+    uORB::SubscriptionCallbackWorkItem *_inner_gyro_sub{nullptr};
+    uORB::Subscription _inner_status_sub{ORB_ID(vehicle_status)};
+    uORB::Subscription _inner_control_mode_sub{ORB_ID(vehicle_control_mode)};
+    uORB::Subscription _inner_attitude_sub{ORB_ID(vehicle_attitude)};
+    vehicle_status_s _inner_status{};
+    vehicle_control_mode_s _inner_control_mode{};
+    vehicle_attitude_s _inner_attitude{};
+    hrt_abstime _inner_last_sample{0};
+    uORB::Publication<se3_wrench_setpoint_s> _wrench_pub{ORB_ID(se3_wrench_setpoint)};
+    uORB::Publication<vehicle_thrust_setpoint_s> _thrust_observation_pub{ORB_ID(vehicle_thrust_setpoint)};
+    uORB::Subscription _allocation_status_sub{ORB_ID(se3_allocation_status)};
+    uORB::Subscription _failure_detector_sub{ORB_ID(failure_detector_status)};
+    se3_allocation_status_s _allocation_status{};
+    bool _motor_failure{false};
+    perf_counter_t _inner_perf{nullptr};
+    perf_counter_t _inner_interval_perf{nullptr};
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
+    px4::atomic_bool _inject_unknown_model{false};
+#endif
+
     px4::atomic_bool _active{false};
     px4::atomic_bool _executing{false};
     px4::atomic_bool _completed{false};
@@ -903,7 +1308,15 @@ private:
         (ParamFloat<px4::params::TRJ_SP_Z>) _param_sp_z,
         (ParamFloat<px4::params::TRJ_SP_YAW>) _param_sp_yaw,
         (ParamFloat<px4::params::MPC_THR_HOVER>) _param_hover,
-        (ParamInt<px4::params::SYS_AUTOSTART>) _param_autostart
+        (ParamInt<px4::params::SYS_AUTOSTART>) _param_autostart,
+        (ParamInt<px4::params::SE3_CTRL>) _param_ctrl,
+        (ParamInt<px4::params::SE3_MODEL>) _param_model,
+        (ParamFloat<px4::params::SE3_PKRX>) _param_pkrx,
+        (ParamFloat<px4::params::SE3_PKRY>) _param_pkry,
+        (ParamFloat<px4::params::SE3_PKRZ>) _param_pkrz,
+        (ParamFloat<px4::params::SE3_PKWX>) _param_pkwx,
+        (ParamFloat<px4::params::SE3_PKWY>) _param_pkwy,
+        (ParamFloat<px4::params::SE3_PKWZ>) _param_pkwz
     )
 };
 

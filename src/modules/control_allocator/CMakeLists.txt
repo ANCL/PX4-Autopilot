@@ -54,3 +54,8 @@ px4_add_module(
 		px4_work_queue
 		SlewRate
 )
+
+# Onboard SE3 PHYSICAL allocation, only on boards that build se3_control.
+if(CONFIG_MODULES_SE3_CONTROL)
+	target_link_libraries(modules__control_allocator PRIVATE se3_physical)
+endif()

@@ -95,6 +95,15 @@ ControlAllocator::init()
 		return false;
 	}
 
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+
+	if (!_se3_wrench_sub.registerCallback()) {
+		PX4_ERR("SE3 wrench callback registration failed");
+		return false;
+	}
+
+#endif
+
 #ifndef ENABLE_LOCKSTEP_SCHEDULER // Backup schedule would interfere with lockstep
 	ScheduleDelayed(50_ms);
 #endif
@@ -304,6 +313,9 @@ ControlAllocator::Run()
 {
 	if (should_exit()) {
 		_vehicle_torque_setpoint_sub.unregisterCallback();
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+		_se3_wrench_sub.unregisterCallback();
+#endif
 		exit_and_cleanup();
 		return;
 	}
@@ -339,6 +351,9 @@ ControlAllocator::Run()
 		if (_vehicle_status_sub.update(&vehicle_status)) {
 
 			_armed = vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+			_nav_state = vehicle_status.nav_state;
+#endif
 
 			ActuatorEffectiveness::FlightPhase flight_phase{ActuatorEffectiveness::FlightPhase::HOVER_FLIGHT};
 
@@ -370,12 +385,46 @@ ControlAllocator::Run()
 
 		if (_vehicle_control_mode_sub.update(&vehicle_control_mode)) {
 			_publish_controls = vehicle_control_mode.flag_control_allocation_enabled;
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+			_rates_enabled = vehicle_control_mode.flag_control_rates_enabled;
+#endif
 		}
 	}
 
 	// Guard against too small (< 0.2ms) and too large (> 20ms) dt's.
 	const hrt_abstime now = hrt_absolute_time();
 	const float dt = math::constrain(((now - _last_run) / 1e6f), 0.0002f, 0.02f);
+
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+	// While PHYSICAL SE3 owns allocation, its SI wrench replaces the normalized
+	// torque/thrust setpoints (mc_rate_control publishes none while the rate
+	// loop is disabled) and the native allocation and status are skipped.
+	// A wrench from any other state is ignored.
+	const bool se3_wrench_updated = _se3_wrench_sub.update(&_se3_wrench);
+
+	se3_physical::OwnershipState ownership{};
+	ownership.now = now;
+	ownership.setpoint_timestamp = _se3_wrench.timestamp;
+	ownership.setpoint_nav_state = _se3_wrench.nav_state;
+	ownership.nav_state = _nav_state;
+	ownership.armed = _armed;
+	ownership.allocation_enabled = _publish_controls;
+	ownership.rates_enabled = _rates_enabled;
+
+	if (se3_physical::physical_owns_allocation(ownership)) {
+		// Each gyro sample is allocated once; a backup run republishes.
+		if (se3_wrench_updated && _se3_wrench.timestamp_sample > _se3_last_sample) {
+			_se3_last_sample = _se3_wrench.timestamp_sample;
+			_last_run = now;
+			allocate_se3_physical(dt);
+		}
+
+		publish_actuator_controls();
+		perf_end(_loop_perf);
+		return;
+	}
+
+#endif
 
 	bool do_update = false;
 	vehicle_torque_setpoint_s vehicle_torque_setpoint;
@@ -708,6 +757,116 @@ ControlAllocator::publish_actuator_controls()
 		_actuator_servos_pub.publish(actuator_servos);
 	}
 }
+
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+bool
+ControlAllocator::se3_motors_compatible() const
+{
+	// One effectiveness matrix holding exactly the model's motors, all
+	// non-reversible with the [0, 1] command range of the thrust curves.
+	if (_num_control_allocation != 1
+	    || _num_actuators[(int)ActuatorType::MOTORS] != se3_physical::kRotorCount
+	    || _num_actuators[(int)ActuatorType::SERVOS] != 0) {
+		return false;
+	}
+
+	const ControlAllocation &allocation = *_control_allocation[0];
+
+	for (int i = 0; i < se3_physical::kRotorCount; ++i) {
+		if (_control_allocation_selection_indexes[i] != 0
+		    || fabsf(allocation.getActuatorMin()(i)) > FLT_EPSILON
+		    || fabsf(allocation.getActuatorMax()(i) - 1.f) > FLT_EPSILON) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void
+ControlAllocator::allocate_se3_physical(float dt)
+{
+	check_for_motor_failures();
+	update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
+
+	// The setpoint names its model, so controller and allocator always use
+	// the same vehicle description. Configure once per model id.
+	if (_se3_model != _se3_wrench.model) {
+		se3_physical::Model model{};
+		const bool known = se3_physical::get_model(_se3_wrench.model, model) && _se3_allocation.configure(model);
+		_se3_model = known ? _se3_wrench.model : -1;
+	}
+
+	se3_allocation_status_s status{};
+	status.timestamp_sample = _se3_wrench.timestamp_sample;
+	status.model = _se3_wrench.model;
+	status.thrust_requested = _se3_wrench.thrust;
+
+	for (int axis = 0; axis < 3; ++axis) {
+		status.moment_requested[axis] = _se3_wrench.moment[axis];
+	}
+
+	const se3_physical::Wrench request{_se3_wrench.thrust, matrix::Vector3f{_se3_wrench.moment}};
+	se3_physical::AllocationResult result{};
+
+	// An unknown model or incompatible outputs leave the last motor commands
+	// in place; SE3 sees compatible = false and hands control back to PX4.
+	status.compatible = _se3_model == _se3_wrench.model && se3_motors_compatible()
+			    && _se3_allocation.allocate(request, result);
+
+	if (status.compatible) {
+		ControlAllocation &allocation = *_control_allocation[0];
+		allocation._prev_actuator_sp = allocation._actuator_sp;
+
+		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
+			allocation._actuator_sp(i) = result.command[i];
+		}
+
+		if (_has_slew_rate) {
+			allocation.applySlewRateLimit(dt);
+		}
+
+		allocation.clipActuatorSetpoint();
+		_timestamp_sample = _se3_wrench.timestamp_sample;
+
+		// Report the wrench of the commands actually published: after slew
+		// limiting, with stopped or failed motors producing no thrust.
+		const uint32_t stopped = _actuator_effectiveness->getStoppedMotors() | _handled_motor_failure_bitmask;
+		float command[se3_physical::kRotorCount];
+		float thrust[se3_physical::kRotorCount];
+
+		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
+			command[i] = allocation._actuator_sp(i);
+		}
+
+		_se3_allocation.thrust_from_commands(command, thrust);
+
+		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
+			if (stopped & (1u << i)) {
+				thrust[i] = 0.f;
+			}
+
+			status.rotor_thrust[i] = thrust[i];
+			status.motor_command[i] = command[i];
+		}
+
+		const se3_physical::Wrench achieved = _se3_allocation.wrench(thrust);
+		status.valid = (stopped & ((1u << se3_physical::kRotorCount) - 1u)) == 0;
+		status.thrust_achieved = achieved.thrust;
+
+		for (int axis = 0; axis < 3; ++axis) {
+			status.moment_achieved[axis] = achieved.moment(axis);
+		}
+
+		status.roll_pitch_scale = result.roll_pitch_scale;
+		status.yaw_scale = result.yaw_scale;
+		status.thrust_limited = result.thrust_limited;
+	}
+
+	status.timestamp = hrt_absolute_time();
+	_se3_allocation_status_pub.publish(status);
+}
+#endif // CONFIG_MODULES_SE3_CONTROL
 
 void
 ControlAllocator::check_for_motor_failures()

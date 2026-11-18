@@ -1,4 +1,4 @@
-# Geometric SE(3) body-rate control module.
+# Geometric SE(3) control module (RATE_PX4 body-rate or PHYSICAL wrench path).
 px4_add_module(
     MODULE modules__se3_control
     MAIN se3_control
@@ -13,6 +13,7 @@ px4_add_module(
         module.yaml
     DEPENDS
         px4_work_queue
+        se3_physical
 )
 
 # Pure-math consistency checks (make tests TESTFILTER=Se3Math).

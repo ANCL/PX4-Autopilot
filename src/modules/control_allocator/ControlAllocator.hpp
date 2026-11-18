@@ -79,6 +79,12 @@
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
 
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+#include <lib/se3_physical/PhysicalAllocation.hpp>
+#include <uORB/topics/se3_allocation_status.h>
+#include <uORB/topics/se3_wrench_setpoint.h>
+#endif
+
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
 public:
@@ -138,6 +144,14 @@ private:
 
 	void publish_actuator_controls();
 
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+	// Onboard SE3 PHYSICAL: allocate an SI wrench in rotor-thrust space, then
+	// reuse the native slew-rate limit, clipping, motor stop/failure handling
+	// and actuator_motors publication.
+	void allocate_se3_physical(float dt);
+	bool se3_motors_compatible() const;
+#endif
+
 	AllocationMethod _allocation_method_id{AllocationMethod::NONE};
 	ControlAllocation *_control_allocation[ActuatorEffectiveness::MAX_NUM_MATRICES] {}; 	///< class for control allocation calculations
 	int _num_control_allocation{0};
@@ -192,6 +206,17 @@ private:
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
 	uORB::Subscription _vehicle_control_mode_sub{ORB_ID(vehicle_control_mode)};
 	uORB::Subscription _failure_detector_status_sub{ORB_ID(failure_detector_status)};
+
+#if defined(CONFIG_MODULES_SE3_CONTROL)
+	uORB::SubscriptionCallbackWorkItem _se3_wrench_sub {this, ORB_ID(se3_wrench_setpoint)};
+	uORB::Publication<se3_allocation_status_s> _se3_allocation_status_pub{ORB_ID(se3_allocation_status)};
+	se3_wrench_setpoint_s _se3_wrench{};
+	se3_physical::Allocation _se3_allocation{};
+	int _se3_model{-1};             ///< model id configured in _se3_allocation, -1 if none
+	hrt_abstime _se3_last_sample{0};
+	uint8_t _nav_state{0};
+	bool _rates_enabled{true};
+#endif
 
 	matrix::Vector3f _torque_sp;
 	matrix::Vector3f _thrust_sp;
