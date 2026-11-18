@@ -1,5 +1,7 @@
 # se3_control — native onboard SE(3) control
 
+**[Flight examples and commands](EXAMPLES.md)**
+
 Geometric SE(3) position/yaw control for an **already airborne** multicopter,
 registered with Commander as one external flight mode named `SE3`. The module
 computes the reference (hold or a firmware-defined trajectory) and the
