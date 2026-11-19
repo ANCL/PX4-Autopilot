@@ -117,12 +117,17 @@ param set TRJ_F8_T 90
 ```
 
 The numbers above are examples, not universally safe flight targets.
-Both patterns are centred on `TRJ_HOME_*`. The reference flies smoothly
-from wherever it is to the pattern, ramps up along it, flies the
-configured turns in exactly `TRJ_CIR_T` / `TRJ_F8_T`, ramps down, and
-returns to home and holds. The entry and return add several seconds.
-Check that the path from the current reference to the pattern and
-back home is clear.
+Both patterns are centred on `TRJ_HOME_*`. The reference first turns to
+`TRJ_HOME_YAW` in place (if needed) and moves along a straight line from
+its current position to the pattern start (the circle's +X edge, or home
+for the figure-eight), at rest at both ends. It then flies the configured
+turns at a constant rate in exactly `TRJ_CIR_T` / `TRJ_F8_T`; the
+reference velocity steps from rest to the pattern speed (0.52 m/s and
+0.88 m/s with the defaults) at the start and back at the end. The circle
+then returns home along a line; the figure-eight already ends at home.
+Each entry or return line takes `max(2 s, distance / 0.25 m/s)`. Check
+that the path from the current reference to the pattern and back home is
+clear.
 
 Live setpoint parameters:
 
@@ -139,7 +144,7 @@ trajectory. Parameter edits become immediate reference steps.
 The `steps5` trajectory steps through five fixed points, each held for
 `TRJ_STEP_HOLD` (5 s): `(0, 0, -1.2)`, `(1, 0, -1.2)`, `(1, 1, -1.2)`,
 `(0, 1, -1.2)` and `(0, 0, -0.9)`. These are true steps; the first is
-taken immediately. Afterwards it returns smoothly to `TRJ_HOME_*`.
+taken immediately. Afterwards it returns along a line to `TRJ_HOME_*`.
 
 ## 5. Take off and enter SE3
 
@@ -171,7 +176,7 @@ needed in between.
 ```text
 se3_control trajectory circle
 se3_control status
-se3_control trajectory figure8     # preempts the circle, entering smoothly
+se3_control trajectory figure8     # replaces the circle; starts from the current position at rest
 se3_control trajectory steps5      # steps at once to (0, 0, -1.2)
 se3_control hold                   # cancels and holds the measured pose
 ```

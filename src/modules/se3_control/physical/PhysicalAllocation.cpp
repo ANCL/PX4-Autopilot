@@ -20,6 +20,17 @@ Vector4 column(const matrix::SquareMatrix<float, kRotorCount> &matrix, int index
 	return result;
 }
 
+bool thrust_differs(const Wrench &achieved, const Wrench &request)
+{
+	return fabsf(achieved.thrust - request.thrust) > 1e-4f * fmaxf(1.f, fabsf(request.thrust));
+}
+
+// Fraction of the requested moment achieved along it, in [0, 1].
+float achieved_fraction(float achieved_along, float requested_squared)
+{
+	return fminf(fmaxf(achieved_along / requested_squared, 0.f), 1.f);
+}
+
 } // namespace
 
 bool Allocation::configure(const Effectiveness &effectiveness, const float minimum[kRotorCount],
@@ -165,11 +176,42 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 	candidate.achieved = wrench(candidate.command);
 	candidate.roll_pitch_scale = tilt_scale;
 	candidate.yaw_scale = yaw_scale;
-	candidate.thrust_limited = fabsf(candidate.achieved.thrust - request.thrust) >
-				   1e-4f * fmaxf(1.f, fabsf(request.thrust));
+	candidate.thrust_limited = thrust_differs(candidate.achieved, request);
 
 	result = candidate;
 	return true;
+}
+
+void Allocation::apply_commands(const Wrench &request, const float command[kRotorCount],
+				AllocationResult &result) const
+{
+	bool changed = false;
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		changed = changed || fabsf(command[i] - result.command[i]) > 1e-6f;
+		result.command[i] = command[i];
+		result.rotor_thrust[i] = rotor_thrust(i, command[i]);
+	}
+
+	result.achieved = wrench(command);
+	result.thrust_limited = thrust_differs(result.achieved, request);
+
+	if (!changed) {
+		return;
+	}
+
+	const matrix::Vector3f &requested = request.moment;
+	const matrix::Vector3f &achieved = result.achieved.moment;
+	const float roll_pitch_squared = requested(0) * requested(0) + requested(1) * requested(1);
+
+	if (roll_pitch_squared > 0.f) {
+		result.roll_pitch_scale = fminf(result.roll_pitch_scale,
+						achieved_fraction(achieved(0) * requested(0) + achieved(1) * requested(1), roll_pitch_squared));
+	}
+
+	if (fabsf(requested(2)) > 0.f) {
+		result.yaw_scale = fminf(result.yaw_scale, achieved_fraction(achieved(2) * requested(2), requested(2) * requested(2)));
+	}
 }
 
 Wrench Allocation::wrench(const float command[kRotorCount]) const

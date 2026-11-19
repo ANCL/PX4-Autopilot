@@ -213,6 +213,7 @@ private:
 	uORB::Publication<se3_allocation_status_s> _se3_allocation_status_pub{ORB_ID(se3_allocation_status)};
 	se3_wrench_setpoint_s _se3_wrench{};
 	se3_physical::Allocation _se3_allocation{};
+	se3_physical::Effectiveness _se3_effectiveness{}; ///< SI CA_ROTOR* effectiveness before the native weak-row filter
 	hrt_abstime _se3_effectiveness_update{0}; ///< effectiveness update _se3_allocation was configured from
 	hrt_abstime _se3_last_sample{0};
 	hrt_abstime _se3_command_wrench_time{0}; ///< wrench timestamp of the physical command in _actuator_sp

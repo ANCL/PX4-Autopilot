@@ -32,9 +32,10 @@ struct TranslationGains
 };
 
 // Bounded integral of the position error, I = int sat(e_x) dt [m s], with the
-// time derivatives it had in its latest update. Derivatives are zero on axes
-// that were frozen, held at the bound or not integrated, so the analytic
-// desired-force derivatives match the integral actually applied.
+// time derivatives it had in its latest update. The rate is the one actually
+// applied (partial on the step that reaches the bound); derivatives are zero
+// on axes that were frozen, held at the bound or not integrated, so the
+// analytic desired-force derivatives match the integral actually applied.
 struct PositionIntegral
 {
   Vector3 value{};
@@ -64,23 +65,6 @@ struct DesiredAttitudeDynamics
   Rotation attitude{};
   Vector3 angular_velocity{};       // [rad/s].
   Vector3 angular_acceleration{};   // [rad/s^2].
-};
-
-// PX4-normalized geometric attitude gains.
-// The feedforward gain multiplies angular acceleration [rad/s^2].
-struct NormalizedAttitudeGains
-{
-  Vector3 attitude{};
-  Vector3 angular_velocity{};
-  Vector3 angular_acceleration{};
-};
-
-struct NormalizedTorqueOutput
-{
-  Vector3 attitude_feedback{};
-  Vector3 angular_velocity_feedback{};
-  Vector3 acceleration_feedforward{};
-  Vector3 torque{};
 };
 
 // Physical geometric attitude gains (SE3_CTRL = PHYSICAL), per body axis:
@@ -116,8 +100,7 @@ struct ForceDerivatives
 //
 // The runtime commands the desired attitude directly (SE3_CTRL =
 // ATTITUDE_PX4), or uses the body-rate law (RATE_PX4) or the physical moment
-// law (PHYSICAL). The normalized torque law in AttitudeLaws
-// uses the same reference but is not selected by the runtime.
+// law (PHYSICAL).
 // Collective acceleration is the positive body-Z projection of A/m.
 struct GeometricOutput
 {

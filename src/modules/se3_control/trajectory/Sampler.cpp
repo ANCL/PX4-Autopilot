@@ -1,13 +1,10 @@
-// Analytic sampling of Hermite and patterned trajectory segments.
+// Analytic trajectory sampling from fixed-capacity segment sequences.
 //
-// Every channel is p(u) = E(u) + (1 - u)^5 F(u) in normalized time u = t / T
-// (see Hermite), so derivatives with respect to t follow exactly from
-//
-//   d^m p / dt^m = T^-m [E^(m)(u) + sum_i C(m, i) F^(i)(u) g^(m-i)(u)],
-//
-// with g(u) = (1 - u)^5 (Leibniz rule). Patterns add a planar offset that is
-// a sinusoid of the phase channel; their derivatives use the chain rule
-// through fourth order.
+// Ninth-order time scaling provides derivatives through snap and smooth
+// boundaries between stationary and interpolated (Line, Yaw) segments.
+// Circles and figure-eights use a linear time scale instead: a constant phase
+// rate, so the configured turns take exactly the segment duration, with a
+// velocity step where they start and end.
 
 #include "Trajectory.hpp"
 
@@ -18,12 +15,24 @@ namespace trajectory_generator
 namespace
 {
 
-constexpr float kHalfPi = 1.57079632679489662f;
+constexpr float kPi = 3.14159265358979323846f;
 
-// Value and first four time derivatives of one scalar channel.
-struct Dynamics
+struct TimeScale
 {
-  float d[5];
+  float s;
+  float d1;
+  float d2;
+  float d3;
+  float d4;
+};
+
+struct ScalarDynamics
+{
+  float value;
+  float d1;
+  float d2;
+  float d3;
+  float d4;
 };
 
 bool finite(const Vector3 & vector)
@@ -45,143 +54,98 @@ bool finite(const Reference & reference)
          std::isfinite(reference.yaw_acceleration);
 }
 
-bool finite(const Hermite & hermite)
+Vector3 add(const Vector3 & first, const Vector3 & second)
 {
-  for (int k = 0; k < 5; ++k) {
-    if (!std::isfinite(hermite.end[k]) || !std::isfinite(hermite.correction[k])) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-// Falling factorial k! / (k - order)!.
-float falling(int k, int order)
-{
-  float value = 1.0f;
-
-  for (int i = 0; i < order; ++i) {
-    value *= static_cast<float>(k - i);
-  }
-
-  return value;
-}
-
-// d^order/dx^order of sum_k c[k] x^k (degree 4), by Horner's rule.
-float taylor(const float c[5], float x, int order)
-{
-  float value = 0.0f;
-
-  for (int k = 4; k >= order; --k) {
-    value = value * x + falling(k, order) * c[k];
-  }
-
-  return value;
-}
-
-// Value and first four time derivatives of a Hermite channel.
-Dynamics evaluate(const Hermite & hermite, float u, float duration_s)
-{
-  constexpr float kBinomial[5][5] = {
-    {1, 0, 0, 0, 0}, {1, 1, 0, 0, 0}, {1, 2, 1, 0, 0}, {1, 3, 3, 1, 0}, {1, 4, 6, 4, 1}
+  return {
+    first[0] + second[0],
+    first[1] + second[1],
+    first[2] + second[2]
   };
+}
 
-  // g^(n)(u) = (-1)^n 5!/(5-n)! (1 - u)^(5-n).
-  const float w = 1.0f - u;
+Vector3 scale(const Vector3 & vector, float factor)
+{
+  return {
+    vector[0] * factor,
+    vector[1] * factor,
+    vector[2] * factor
+  };
+}
+
+Reference stationary(const Vector3 & position, float yaw)
+{
+  Reference reference{};
+  reference.position = position;
+  reference.yaw = yaw;
+  return reference;
+}
+
+// Ninth-order C4 interpolation. Derivatives through snap vanish at both
+// endpoints, allowing smooth segments to join stationary references.
+TimeScale smooth_time_scale(float time_s, float duration_s)
+{
+  const float t = time_s < 0.0f ? 0.0f : (time_s > duration_s ? duration_s : time_s);
+  const float u = t / duration_s;
+
+  // P(1-u) = 1-P(u). Work only on 0 <= w <= 0.5 so its
+  // polynomial does not subtract large, nearly equal numbers.
+  const bool upper_half = u > 0.5f;
+  const float w = upper_half ? 1.0f - u : u;
   const float w2 = w * w;
-  const float g[5] {w2 * w2 * w, -5.0f * w2 * w2, 20.0f * w2 * w, -60.0f * w2, 120.0f * w};
+  const float w3 = w2 * w;
+  const float w4 = w3 * w;
+  const float one_minus_w = 1.0f - w;
+  const float v2 = one_minus_w * one_minus_w;
+  const float v3 = v2 * one_minus_w;
+  const float v4 = v3 * one_minus_w;
 
-  float correction[5];
+  // P(w) = 126w^5 - 420w^6 + 540w^7 - 315w^8 + 70w^9.
+  const float p = w4 * w *
+                  (126.0f + w * (-420.0f + w *
+                   (540.0f + w * (-315.0f + 70.0f * w))));
 
-  for (int i = 0; i < 5; ++i) {
-    correction[i] = taylor(hermite.correction, u, i);
-  }
+  // Exact derivatives with respect to dimensionless u.
+  const float d1 = 630.0f * w4 * v4;
+  const float d2 = 2520.0f * w3 * v3 * (1.0f - 2.0f * w);
+  const float d3 = 2520.0f * w2 * v2 * (3.0f - 14.0f * w + 14.0f * w2);
+  const float d4 = 15120.0f * w * one_minus_w * (1.0f - 2.0f * w) *
+                   (1.0f - 7.0f * w + 7.0f * w2);
 
-  Dynamics result{};
-  float scale = 1.0f;
-  const float inverse_duration = 1.0f / duration_s;
+  const float inv_t = 1.0f / duration_s;
+  const float inv_t2 = inv_t * inv_t;
+  const float inv_t3 = inv_t2 * inv_t;
+  const float inv_t4 = inv_t3 * inv_t;
 
-  for (int order = 0; order < 5; ++order) {
-    float value = taylor(hermite.end, u - 1.0f, order);
-
-    for (int i = 0; i <= order; ++i) {
-      value += kBinomial[order][i] * correction[i] * g[order - i];
-    }
-
-    result.d[order] = value * scale;
-    scale *= inverse_duration;
-  }
-
-  return result;
-}
-
-}  // namespace
-
-// Two-point Hermite form of the degree-9 polynomial with the given end states.
-//
-// With s_i and e_m the scaled Taylor coefficients x^(i) T^i / i! at u = 0 and
-// u = 1, E(u) = sum_m e_m (u - 1)^m. The difference p - E has Taylor
-// coefficients d_i = s_i - [u^i] E at u = 0, and F is the degree-4 truncation
-// of (p - E)(u) (1 - u)^-5 = sum_j u^j sum_(i<=j) d_i C(j - i + 4, 4).
-Hermite hermite(const float start[5], const float end[5], float duration_s)
-{
-  constexpr float kBinomial[5][5] = {
-    {1, 0, 0, 0, 0}, {1, 1, 0, 0, 0}, {1, 2, 1, 0, 0}, {1, 3, 3, 1, 0}, {1, 4, 6, 4, 1}
+  // P' and P''' are symmetric; P'' and P'''' are antisymmetric.
+  return {
+    upper_half ? 1.0f - p : p,
+    d1 * inv_t,
+    (upper_half ? -d2 : d2) * inv_t2,
+    d3 * inv_t3,
+    (upper_half ? -d4 : d4) * inv_t4
   };
-  constexpr float kInverseSeries[5] {1.0f, 5.0f, 15.0f, 35.0f, 70.0f}; // C(n + 4, 4)
-
-  Hermite result{};
-  float scaled_start[5];
-  float scale = 1.0f;
-  float factorial = 1.0f;
-
-  for (int k = 0; k < 5; ++k) {
-    result.end[k] = end[k] * scale / factorial;
-    scaled_start[k] = start[k] * scale / factorial;
-    scale *= duration_s;
-    factorial *= static_cast<float>(k + 1);
-  }
-
-  float difference[5];
-
-  for (int i = 0; i < 5; ++i) {
-    float coefficient = 0.0f; // [u^i] of E(u) = sum_m e_m (u - 1)^m.
-
-    for (int m = i; m < 5; ++m) {
-      coefficient += result.end[m] * kBinomial[m][i] * (((m - i) % 2) ? -1.0f : 1.0f);
-    }
-
-    difference[i] = scaled_start[i] - coefficient;
-  }
-
-  for (int j = 0; j < 5; ++j) {
-    float value = 0.0f;
-
-    for (int i = 0; i <= j; ++i) {
-      value += difference[i] * kInverseSeries[j - i];
-    }
-
-    result.correction[j] = value;
-  }
-
-  return result;
 }
 
-namespace
+// Constant rate: s = t / T, so only the first derivative is non-zero.
+TimeScale linear_time_scale(float time_s, float duration_s)
 {
+  const float t = time_s < 0.0f ? 0.0f : (time_s > duration_s ? duration_s : time_s);
+  return {t / duration_s, 1.0f / duration_s, 0.0f, 0.0f, 0.0f};
+}
 
-// Derivatives of amplitude * sin(phi(t)) from those of phi(t).
-Dynamics sinusoid(float amplitude, const Dynamics & phi)
+// Analytical derivatives of amplitude*sin(phase(t)) through fourth order.
+ScalarDynamics sinusoid(
+  float amplitude,
+  float phase,
+  float p1,
+  float p2,
+  float p3,
+  float p4)
 {
-  const float s = std::sin(phi.d[0]);
-  const float c = std::cos(phi.d[0]);
-  const float p1 = phi.d[1];
-  const float p2 = phi.d[2];
-  const float p3 = phi.d[3];
-  const float p4 = phi.d[4];
+  const float s = std::sin(phase);
+  const float c = std::cos(phase);
 
-  return {{
+  return {
     amplitude * s,
     amplitude * c * p1,
     amplitude * (-s * p1 * p1 + c * p2),
@@ -193,82 +157,190 @@ Dynamics sinusoid(float amplitude, const Dynamics & phi)
       4.0f * s * p1 * p3 +
       c * p4
     )
-  }};
+  };
 }
 
-// phi(t) + offset, or k phi(t) for a frequency multiple k.
-Dynamics shifted(Dynamics phi, float offset, float multiple)
+Reference sample_line(
+  const Segment & segment,
+  const Reference & origin,
+  const TimeScale & q)
 {
-  for (float & value : phi.d) {
-    value *= multiple;
+  Reference reference{};
+
+  reference.position = add(origin.position, scale(segment.offset, q.s));
+  reference.velocity = scale(segment.offset, q.d1);
+  reference.acceleration = scale(segment.offset, q.d2);
+  reference.jerk = scale(segment.offset, q.d3);
+  reference.snap = scale(segment.offset, q.d4);
+  reference.yaw = origin.yaw;
+
+  return reference;
+}
+
+Reference sample_yaw(
+  const Segment & segment,
+  const Reference & origin,
+  const TimeScale & q)
+{
+  Reference reference =
+    stationary(origin.position, origin.yaw + segment.yaw_offset_rad * q.s);
+
+  reference.yaw_rate = segment.yaw_offset_rad * q.d1;
+  reference.yaw_acceleration = segment.yaw_offset_rad * q.d2;
+
+  return reference;
+}
+
+Reference sample_figure_eight(
+  const Segment & segment,
+  const Reference & origin,
+  const TimeScale & q)
+{
+  const float angle = 2.0f * kPi * segment.turns * q.s;
+  const float a1 = 2.0f * kPi * segment.turns * q.d1;
+  const float a2 = 2.0f * kPi * segment.turns * q.d2;
+  const float a3 = 2.0f * kPi * segment.turns * q.d3;
+  const float a4 = 2.0f * kPi * segment.turns * q.d4;
+
+  const ScalarDynamics x =
+    sinusoid(segment.x_amplitude_m, angle, a1, a2, a3, a4);
+
+  // Twice the x phase produces the planar 1:2 Lissajous curve.
+  const ScalarDynamics y =
+    sinusoid(
+      segment.y_amplitude_m,
+      2.0f * angle,
+      2.0f * a1,
+      2.0f * a2,
+      2.0f * a3,
+      2.0f * a4
+    );
+
+  Reference reference{};
+
+  reference.position = {
+    origin.position[0] + x.value,
+    origin.position[1] + y.value,
+    origin.position[2]
+  };
+
+  reference.velocity = {x.d1, y.d1, 0.0f};
+  reference.acceleration = {x.d2, y.d2, 0.0f};
+  reference.jerk = {x.d3, y.d3, 0.0f};
+  reference.snap = {x.d4, y.d4, 0.0f};
+  reference.yaw = origin.yaw;
+
+  return reference;
+}
+
+Reference sample_circle(
+  const Segment & segment,
+  const Reference & origin,
+  const TimeScale & q)
+{
+  const float angle = 2.0f * kPi * segment.turns * q.s;
+
+  const float w1 = 2.0f * kPi * segment.turns * q.d1;
+  const float w2 = 2.0f * kPi * segment.turns * q.d2;
+  const float w3 = 2.0f * kPi * segment.turns * q.d3;
+  const float w4 = 2.0f * kPi * segment.turns * q.d4;
+
+  const float c = std::cos(angle);
+  const float s = std::sin(angle);
+
+  const float r = segment.radius_m;
+
+  Reference reference{};
+
+  // The segment starts at origin.position. Its circle center is one radius
+  // toward negative local-NED x, so entry has no position discontinuity.
+  reference.position = {
+    origin.position[0] + r * (c - 1.0f),
+    origin.position[1] + r * s,
+    origin.position[2]
+  };
+
+  reference.velocity = {
+    -r * s * w1,
+    r * c * w1,
+    0.0f
+  };
+
+  reference.acceleration = {
+    -r * (c * w1 * w1 + s * w2),
+    r * (-s * w1 * w1 + c * w2),
+    0.0f
+  };
+
+  reference.jerk = {
+    r * (s * w1 * w1 * w1 - 3.0f * c * w1 * w2 - s * w3),
+    r * (-c * w1 * w1 * w1 - 3.0f * s * w1 * w2 + c * w3),
+    0.0f
+  };
+
+  reference.snap = {
+    r * (
+      6.0f * s * w1 * w1 * w2 -
+      s * w4 +
+      c * w1 * w1 * w1 * w1 -
+      4.0f * c * w1 * w3 -
+      3.0f * c * w2 * w2
+    ),
+    r * (
+      s * w1 * w1 * w1 * w1 -
+      4.0f * s * w1 * w3 -
+      3.0f * s * w2 * w2 -
+      6.0f * c * w1 * w1 * w2 +
+      c * w4
+    ),
+    0.0f
+  };
+
+  reference.yaw = origin.yaw;
+
+  return reference;
+}
+
+// Select a primitive while keeping sequence logic independent of its shape.
+Reference sample_segment(
+  const Segment & segment,
+  float time_s,
+  const Reference & origin)
+{
+  if (segment.type == Segment::Type::Hold) {
+    return stationary(origin.position, origin.yaw);
   }
 
-  phi.d[0] += offset;
-  return phi;
+  if (segment.type == Segment::Type::Step) {
+    // A step is instantaneous, including at its segment start.
+    return stationary(add(origin.position, segment.offset), origin.yaw);
+  }
+
+  const bool constant_rate = segment.type == Segment::Type::Circle ||
+                             segment.type == Segment::Type::FigureEight;
+  const TimeScale q = constant_rate ?
+                      linear_time_scale(time_s, segment.duration_s) :
+                      smooth_time_scale(time_s, segment.duration_s);
+
+  switch (segment.type) {
+  case Segment::Type::Line:
+    return sample_line(segment, origin, q);
+
+  case Segment::Type::Circle:
+    return sample_circle(segment, origin, q);
+
+  case Segment::Type::Yaw:
+    return sample_yaw(segment, origin, q);
+
+  case Segment::Type::FigureEight:
+    return sample_figure_eight(segment, origin, q);
+
+  default:
+    return Reference{};
+  }
 }
 
 }  // namespace
-
-bool sample_segment(const Segment & segment, float time_s, Reference & reference)
-{
-  if (!(segment.duration_s > 0.0f) || !std::isfinite(time_s)) {
-    return false;
-  }
-
-  const float clamped = time_s < 0.0f ? 0.0f :
-                        (time_s > segment.duration_s ? segment.duration_s : time_s);
-  const float u = clamped / segment.duration_s;
-
-  Dynamics axes[3];
-
-  for (int axis = 0; axis < 3; ++axis) {
-    axes[axis] = evaluate(segment.position[axis], u, segment.duration_s);
-  }
-
-  if (segment.shape != Segment::Shape::None) {
-    const Dynamics phase = evaluate(segment.phase, u, segment.duration_s);
-    Dynamics x{};
-    Dynamics y{};
-
-    if (segment.shape == Segment::Shape::Circle) {
-      // (r cos(phi), r sin(phi)), with cos(phi) = sin(phi + pi/2).
-      x = sinusoid(segment.x_amplitude_m, shifted(phase, kHalfPi, 1.0f));
-      y = sinusoid(segment.x_amplitude_m, phase);
-
-    } else {
-      // 1:2 Lissajous curve through the centre at phase 0.
-      x = sinusoid(segment.x_amplitude_m, phase);
-      y = sinusoid(segment.y_amplitude_m, shifted(phase, 0.0f, 2.0f));
-    }
-
-    for (int order = 0; order < 5; ++order) {
-      axes[0].d[order] += x.d[order];
-      axes[1].d[order] += y.d[order];
-    }
-  }
-
-  const Dynamics yaw = evaluate(segment.yaw, u, segment.duration_s);
-  Reference candidate{};
-
-  for (int axis = 0; axis < 3; ++axis) {
-    candidate.position[axis] = axes[axis].d[0];
-    candidate.velocity[axis] = axes[axis].d[1];
-    candidate.acceleration[axis] = axes[axis].d[2];
-    candidate.jerk[axis] = axes[axis].d[3];
-    candidate.snap[axis] = axes[axis].d[4];
-  }
-
-  candidate.yaw = yaw.d[0];
-  candidate.yaw_rate = yaw.d[1];
-  candidate.yaw_acceleration = yaw.d[2];
-
-  if (!finite(candidate)) {
-    return false;
-  }
-
-  reference = candidate;
-  return true;
-}
 
 // Reject invalid sequences before sampling. This also protects the bounded
 // array against an invalid count and prevents non-finite trajectory inputs.
@@ -284,20 +356,28 @@ bool validate(const Sequence & sequence)
     const Segment & segment = sequence.segments[index];
 
     if (!std::isfinite(segment.duration_s) || segment.duration_s < 0.01f ||
-        !finite(segment.position[0]) ||
-        !finite(segment.position[1]) ||
-        !finite(segment.position[2]) ||
-        !finite(segment.yaw) ||
-        !finite(segment.phase) ||
+        !finite(segment.offset) ||
+        !std::isfinite(segment.radius_m) ||
+        !std::isfinite(segment.turns) ||
+        !std::isfinite(segment.yaw_offset_rad) ||
         !std::isfinite(segment.x_amplitude_m) ||
-        !std::isfinite(segment.y_amplitude_m) ||
-        segment.shape > Segment::Shape::FigureEight) {
+        !std::isfinite(segment.y_amplitude_m)) {
       return false;
     }
 
-    if ((segment.shape == Segment::Shape::Circle && segment.x_amplitude_m <= 0.0f) ||
-        (segment.shape == Segment::Shape::FigureEight &&
-         (segment.x_amplitude_m <= 0.0f || segment.y_amplitude_m <= 0.0f))) {
+    if (segment.type == Segment::Type::Circle &&
+        segment.radius_m <= 0.0f) {
+      return false;
+    }
+
+    if (segment.type == Segment::Type::FigureEight &&
+        (segment.x_amplitude_m <= 0.0f ||
+         segment.y_amplitude_m <= 0.0f ||
+         segment.turns <= 0.0f)) {
+      return false;
+    }
+
+    if (segment.type > Segment::Type::FigureEight) {
       return false;
     }
 
@@ -326,35 +406,53 @@ std::size_t segment_index(const Sequence & sequence, float time_s)
   return sequence.count;
 }
 
-bool sample(const Sequence & sequence, float time_s, Reference & reference)
+// Evaluate the sequence using configured NED reference coordinates.
+// The previous segment's ending position and yaw anchor the next segment.
+// At an exact boundary, the ending segment owns the returned sample.
+bool sample(
+  const Sequence & sequence,
+  float time_s,
+  const Reference & origin,
+  Reference & reference)
 {
-  if (!validate(sequence) || !std::isfinite(time_s)) {
+  if (!validate(sequence) ||
+      !std::isfinite(time_s) ||
+      !finite(origin.position) ||
+      !std::isfinite(origin.yaw)) {
     return false;
   }
 
+  Reference segment_origin = stationary(origin.position, origin.yaw);
   float remaining_s = time_s > 0.0f ? time_s : 0.0f;
 
   for (std::size_t index = 0; index < sequence.count; ++index) {
     const Segment & segment = sequence.segments[index];
 
     if (remaining_s <= segment.duration_s) {
-      return sample_segment(segment, remaining_s, reference);
+      const Reference candidate =
+        sample_segment(segment, remaining_s, segment_origin);
+
+      if (!finite(candidate)) {
+        return false;
+      }
+
+      reference = candidate;
+      return true;
+    }
+
+    segment_origin =
+      sample_segment(segment, segment.duration_s, segment_origin);
+
+    if (!finite(segment_origin)) {
+      return false;
     }
 
     remaining_s -= segment.duration_s;
   }
 
-  // Once every segment has completed, hold the final pose at rest.
-  const Segment & last = sequence.segments[sequence.count - 1];
-  Reference ending{};
+  // Once every segment has completed, hold the final pose and heading.
+  reference = stationary(segment_origin.position, segment_origin.yaw);
 
-  if (!sample_segment(last, last.duration_s, ending)) {
-    return false;
-  }
-
-  reference = Reference{};
-  reference.position = ending.position;
-  reference.yaw = ending.yaw;
   return true;
 }
 

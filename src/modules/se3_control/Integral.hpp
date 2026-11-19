@@ -8,34 +8,40 @@
 namespace se3_control
 {
 
-// Advance value by input * dt and keep |value| <= limit.
+// Advance value by input * dt and keep |value| <= limit. Returns the rate
+// dvalue/dt actually applied, so the stored value and the reported rate always
+// agree: input inside the bound, (bound - value) / dt for the step that
+// reaches it, and zero at the bound against an outward input.
 //
-// Anti-windup: nothing is integrated while frozen, and an input that would
-// push the value further beyond the limit is discarded. A zero limit (zero
-// gain) resets the axis. Returns true if the input was integrated, so the
-// applied rate dvalue/dt is input; otherwise it is zero.
-inline bool integrate_bounded(float &value, float input, float dt, float limit, bool freeze)
+// Anti-windup: nothing is integrated while frozen, without a time step or for
+// a non-finite input (rate zero). A zero limit (zero gain) resets the axis. A
+// value beyond a reduced limit (gain increase) is clamped as a discrete
+// reconfiguration, not as integration.
+inline float integrate_bounded(float &value, float input, float dt, float limit, bool freeze)
 {
 	if (!(limit > 0.0f) || !std::isfinite(value)) {
 		value = 0.0f;
-		return false;
+		return 0.0f;
 	}
 
+	value = fminf(fmaxf(value, -limit), limit);
+
 	if (freeze || !(dt > 0.0f) || !std::isfinite(input)) {
-		value = fminf(fmaxf(value, -limit), limit);
-		return false;
+		return 0.0f;
 	}
 
 	const float next = value + input * dt;
 
-	if (fabsf(next) >= limit) {
-		// At the limit the integral holds; only an input back inside acts.
-		value = next > 0.0f ? limit : -limit;
-		return false;
+	if (fabsf(next) <= limit) {
+		value = next;
+		return input;
 	}
 
-	value = next;
-	return true;
+	// The step reaches the bound: only the part up to it is applied.
+	const float bounded = next > 0.0f ? limit : -limit;
+	const float rate = (bounded - value) / dt;
+	value = bounded;
+	return rate;
 }
 
 } // namespace se3_control

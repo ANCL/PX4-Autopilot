@@ -80,10 +80,12 @@ Vector3 component_product(const Vector3 & first, const Vector3 & second)
 //
 //   I += sat(e_x) dt,   |k_i I| <= kIntegralAcceleration{XY,Z}
 //
-// Per axis the applied rate is dI/dt = sat(e_x), and d^2I/dt^2 = e_v while
-// |e_x| is inside the saturation. Both are zero when the axis is frozen (the
-// caller reports saturated outputs), held at its bound, or has zero gain,
-// which also clears it. These are the exact rates the force derivatives use.
+// Per axis the applied rate is dI/dt = sat(e_x) (only the part up to the
+// bound on the step that reaches it), and d^2I/dt^2 = e_v while I is inside
+// its bound and |e_x| inside the saturation. Both are zero when the axis is
+// frozen (the caller reports saturated outputs), held at its bound, or has
+// zero gain, which also clears it. These are the exact rates the force
+// derivatives use.
 bool Controller::update_integral(
   const State & state,
   const trajectory_generator::Reference & reference,
@@ -108,10 +110,13 @@ bool Controller::update_integral(
     const float limit = gains.integral(axis) > 0.0f ? bound / gains.integral(axis) : 0.0f;
     const float input = fminf(fmaxf(error, -kIntegralErrorLimit), kIntegralErrorLimit);
 
-    const bool active = integrate_bounded(next.value(axis), input, dt, limit, freeze);
-    next.rate(axis) = active ? input : 0.0f;
-    next.rate_derivative(axis) =
-      active && fabsf(error) < kIntegralErrorLimit ? velocity_error : 0.0f;
+    next.rate(axis) = integrate_bounded(next.value(axis), input, dt, limit, freeze);
+
+    // d^2I/dt^2 = d/dt sat(e_x) = e_v only while integrating strictly inside
+    // both the bound and the error saturation.
+    const bool inside = !freeze && dt > 0.0f && fabsf(next.value(axis)) < limit &&
+                        fabsf(error) < kIntegralErrorLimit;
+    next.rate_derivative(axis) = inside ? velocity_error : 0.0f;
   }
 
   integral = next;

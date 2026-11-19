@@ -2,4 +2,7 @@ menuconfig MODULES_SE3_CONTROL
     bool "se3_control"
     default n
     ---help---
-        Experimental native SE(3) position/attitude reference to PX4 rate loop.
+        Experimental onboard geometric SE(3) controller registered as a
+        Commander flight mode, with three paths (SE3_CTRL): PX4 attitude
+        control, PX4 rate control, or a physical wrench allocated by
+        control_allocator.

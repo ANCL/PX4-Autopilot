@@ -1,4 +1,4 @@
-// Geometric SO(3) body-rate, physical moment and normalized torque control.
+// Geometric SO(3) body-rate and physical moment control.
 //
 // Geometric attitude error (Lee et al., 2010):
 //
@@ -192,57 +192,6 @@ bool AttitudeLaws::physical(
     candidate.inertial_feedforward;
 
   if (!candidate.moment.isAllFinite()) {
-    return false;
-  }
-
-  output = candidate;
-  return true;
-}
-
-bool AttitudeLaws::normalized(
-  const State & state,
-  const DesiredAttitudeDynamics & desired,
-  const NormalizedAttitudeGains & gains,
-  NormalizedTorqueOutput & output)
-{
-  if (!nonnegative(gains.attitude) ||
-      !nonnegative(gains.angular_velocity) ||
-      !nonnegative(gains.angular_acceleration)) {
-    return false;
-  }
-
-  AttitudeErrors errors{};
-
-  if (!compute_errors(state, desired, errors)) {
-    return false;
-  }
-
-  // Normalized geometric torque:
-  //
-  // tau_n = -K_R e_R - K_Omega e_Omega + K_alpha alpha_ff
-  //
-  // No physical inertia or N*m conversion occurs in this law.
-  NormalizedTorqueOutput candidate{};
-
-  candidate.attitude_feedback =
-    -component_product(gains.attitude, errors.attitude);
-
-  candidate.angular_velocity_feedback =
-    -component_product(
-      gains.angular_velocity,
-      errors.angular_velocity);
-
-  candidate.acceleration_feedforward =
-    component_product(
-      gains.angular_acceleration,
-      errors.acceleration_feedforward);
-
-  candidate.torque =
-    candidate.attitude_feedback +
-    candidate.angular_velocity_feedback +
-    candidate.acceleration_feedforward;
-
-  if (!candidate.torque.isAllFinite()) {
     return false;
   }
 

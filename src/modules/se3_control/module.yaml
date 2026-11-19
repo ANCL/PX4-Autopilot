@@ -57,6 +57,7 @@ parameters:
         SE3_KRX:
             description:
                 short: Native SE3 roll attitude-to-rate gain
+                long: Used only by SE3_CTRL = RATE_PX4.
             type: float
             min: 0.0
             max: 100.0
@@ -64,6 +65,7 @@ parameters:
         SE3_KRY:
             description:
                 short: Native SE3 pitch attitude-to-rate gain
+                long: Used only by SE3_CTRL = RATE_PX4.
             type: float
             min: 0.0
             max: 100.0
@@ -71,6 +73,7 @@ parameters:
         SE3_KRZ:
             description:
                 short: Native SE3 yaw attitude-to-rate gain
+                long: Used only by SE3_CTRL = RATE_PX4.
             type: float
             min: 0.0
             max: 100.0
@@ -78,6 +81,7 @@ parameters:
         SE3_RATE_MAX:
             description:
                 short: Native SE3 maximum requested body rate
+                long: Used only by SE3_CTRL = RATE_PX4.
             type: float
             unit: rad/s
             min: 0.1
@@ -319,7 +323,7 @@ parameters:
         TRJ_CIR_T:
             description:
                 short: Circle duration
-                long: Duration of the constant-rate turns, excluding entry and return.
+                long: Duration of the constant-rate turns, excluding the entry and return moves.
             type: float
             unit: s
             min: 0.1
@@ -351,7 +355,7 @@ parameters:
         TRJ_F8_T:
             description:
                 short: Figure-eight duration
-                long: Duration of the constant-rate cycles, excluding entry and return.
+                long: Duration of the constant-rate cycles, excluding the entry move. The pattern ends at TRJ_HOME_*.
             type: float
             unit: s
             min: 0.1

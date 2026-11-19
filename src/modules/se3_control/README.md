@@ -96,10 +96,12 @@ It is updated once per 100 Hz cycle, before the translation law.
 - **Reset** on mode entry and exit, on every fault and therefore on estimator
   resets (a controller fault), and per axis when its gain is 0. Trajectory
   and hold commands keep it: it represents a model offset, not a reference.
-- **Derivatives:** the force derivatives use the rates of the latest update
-  (`dI/dt = sat(e_x)`, `d²I/dt² = e_v` inside the saturation, both zero when
-  frozen, held at the bound or saturated), so `Ω_d` and `Ω̇_d` stay
-  consistent with the integral actually applied.
+- **Derivatives:** the force derivatives use the rates of the latest update,
+  so `Ω_d` and `Ω̇_d` stay consistent with the integral actually applied.
+  `dI/dt` is the rate actually applied: `sat(e_x)` inside the bound, only the
+  part up to the bound on the step that reaches it, and zero when frozen or
+  held at the bound. `d²I/dt² = e_v` only while `I` is strictly inside its
+  bound and `|e_x|` inside the 0.5 m saturation.
 
 `AttitudeReference.cpp` builds `R_d` from `b3_d = -A/‖A‖` and the reference
 heading (Lee et al., 2010). It also computes `Ω_d` and `Ω̇_d` analytically from
@@ -220,8 +222,12 @@ linearizes the real motor curve. The Gazebo F450 curve is
 over-predicts thrust below full command (5.08 N per rotor at hover is
 commanded as `u = 0.42`, which produces 3.1 N). PHYSICAL hover then depends
 on the vertical position integral (bounded at 2 m/s²) and a steady
-position error. A `THR_MDL_FAC` near 0.7 matches the Gazebo curve within a
-few percent. See Validation.
+position error: in SITL the integral sits at its bound, the request is
+28.2 N for a 20.3 N weight, and the vehicle holds about 0.45 m low. The
+Gazebo curve normalized to `CT` is `(0.15 + 0.85 x)²`, which
+`THR_MDL_FAC = 0.72` matches to within 0.023 of full thrust; with it (and the
+thrust-linear `MPC_THR_HOVER = 0.42`) the request is 19.9 N and the vertical
+integral about 0.2 m/s². These are runtime test values only; see Validation.
 
 ### Compatibility requirements
 
@@ -238,8 +244,13 @@ hold; otherwise the wrench is reported as `compatible = false`:
 `Allocation::configure()` additionally rejects (also `compatible = false`):
 - lateral or downward rotor thrust;
 - a singular or ill-conditioned geometry, including a failed motor's zeroed
-  column;
-- a weak yaw row that PX4 zeroed (all entries ≤ 0.05).
+  column.
+
+The effectiveness is captured in `update_effectiveness_matrix_if_needed()`
+after failed motors are zeroed but **before** the native weak-authority filter
+(rows with all entries ≤ 0.05 set to zero), so small but physically valid SI
+coefficients, such as `CT·KM < 0.05 N m` on a small vehicle, are kept. Native
+allocation still uses the filtered matrix.
 
 ### Motor-command allocation (`PhysicalAllocation.{hpp,cpp}`)
 
@@ -282,17 +293,21 @@ commands the motors.
   (`kWrenchTimeout`). After that, nothing is republished.
 - After physical ownership ends, the stored command is never republished. Only
   a fresh native allocation drives the motors again.
-- An incompatible wrench allocates and publishes nothing.
+- An incompatible or rejected wrench allocates and publishes nothing, and the
+  previous physical command is no longer republished either.
 
 **Native protections reused.** After allocation the command goes through the
 native slew-rate limit (`CA_R*_SLEW`), clipping, stopped-motor and
 motor-failure handling, and `actuator_motors` publication.
 
-**Reporting.** `se3_allocation_status` reports the wrench of the commands
-actually published: after slew limiting, with stopped or failed motors
-contributing zero thrust. `valid = false` means not all rotors are running.
-The roll/pitch and yaw scales and `thrust_limited` are the anti-windup inputs
-of both SE3 integrals.
+**Reporting.** `se3_allocation_status` describes the commands actually
+published (`Allocation::apply_commands()`): after slew limiting and clipping,
+with stopped or failed motors contributing zero thrust. The achieved wrench,
+rotor thrusts and `thrust_limited` follow from those commands; if any command
+changed after allocation, each scale is capped at the fraction of the
+requested moment the final wrench achieves along it. `valid = false` means not
+all rotors are running. The roll/pitch and yaw scales and `thrust_limited` are
+the anti-windup inputs of both SE3 integrals.
 
 ## Source organization
 
@@ -303,9 +318,9 @@ of both SE3 integrals.
 | `Controller.{hpp,cpp}` | translation law with the position integral, force derivatives, geometric output |
 | `Integral.hpp` | bounded, freezable integration step shared by both integrals |
 | `AttitudeReference.{hpp,cpp}` | `R_d`, `Ω_d`, `Ω̇_d` from the specific force and heading |
-| `AttitudeLaws.{hpp,cpp}` | `e_R`/`e_Ω`; body-rate law, physical Lee moment, and a normalized-torque law that the runtime does not use |
+| `AttitudeLaws.{hpp,cpp}` | `e_R`/`e_Ω`; body-rate law and physical Lee moment |
 | `Types.hpp` | shared state, gain and output types |
-| `trajectory/` | `Trajectory.hpp` interface, `Catalog.cpp` (named plans: entries, patterns, returns), `Parameters.cpp` (`TRJ_*` access), `Sampler.cpp` (C4 Hermite segments and patterns, derivatives through snap). No dependency on SE3 gains, flight modes or uORB. |
+| `trajectory/` | `Trajectory.hpp` interface, `Catalog.cpp` (named plans: entries, patterns, returns), `Parameters.cpp` (`TRJ_*` access), `Sampler.cpp` (Hold, Step, Line, Yaw, Circle and FigureEight segments, analytic derivatives through snap). No dependency on SE3 gains, flight modes or uORB. |
 | `physical/` | `se3_physical` library: `PhysicalAllocation` (shared with `control_allocator`). `PhysicalPath` holds the module's PHYSICAL runtime state (mass, inertia, reference, attitude integral), built only into `se3_control`. |
 | `Se3MathTest.cpp`, `physical/PhysicalAllocationTest.cpp` | unit tests |
 | `module.yaml` | `SE3_*` and `TRJ_*` parameters |
@@ -354,7 +369,7 @@ se3_control status                 # path, active/faulted, trajectory, integral,
 se3_control select                 # request the SE3 mode from Commander (may be rejected)
 se3_control hold                   # cancel any trajectory; hold the measured position and heading
 se3_control list                   # setpoint, steps5, circle, figure8
-se3_control trajectory <name>      # start now; preempts any running trajectory
+se3_control trajectory <name>      # start now; replaces any running trajectory
 se3_control fault controller|state|allocation   # SITL only, needs SYS_FAILURE_EN=1
 ```
 
@@ -367,45 +382,52 @@ se3_control fault controller|state|allocation   # SITL only, needs SYS_FAILURE_E
   discarded.
 - **Direct switching.** `trajectory <name>` and `hold` are accepted whenever
   SE3 is active, including during a running trajectory or its entry. The
-  latest command wins and is applied on the next 100 Hz cycle. A new
-  trajectory is built from the reference the current plan has at that
-  instant, so no `hold`, completion or reselection is needed in between.
-  `hold` cancels the trajectory and captures the measured pose.
+  latest command wins and replaces the current plan on the next 100 Hz cycle;
+  no `hold`, completion or reselection is needed in between. There is no
+  blending: `setpoint` and `steps5` step immediately, while `circle` and
+  `figure8` start from the position and yaw the current plan has at that
+  instant **at rest**, so replacing a moving reference changes its velocity
+  discontinuously. `hold` cancels the trajectory and captures the measured
+  pose.
 - **References are absolute local NED** (`TRJ_HOME_*` is the pattern centre,
   altitude and heading, and the return point).
 
 | Trajectory | Behavior | Parameters (defaults) |
 |---|---|---|
 | `setpoint` | immediate step to `TRJ_SP_*`, held indefinitely; live parameter edits are immediate steps | `TRJ_SP_X/Y/Z/YAW` (0, 0, −1.0, 0) |
-| `steps5` | five true steps, each held `TRJ_STEP_HOLD`, then a smooth return home and hold | `TRJ_STEP_HOLD` (5 s) |
-| `circle` | `TRJ_CIR_TURNS` turns of radius `TRJ_CIR_R` in `TRJ_CIR_T` around home, starting at its +X edge | `TRJ_CIR_R/T/TURNS` (1.0 m, 60 s, 5) |
-| `figure8` | `x = a_x sin φ`, `y = a_y sin 2φ` around home, `TRJ_F8_TURNS` cycles in `TRJ_F8_T` | `TRJ_F8_AX/AY/T/TURNS` (0.8 m, 1.2 m, 90 s, 5) |
+| `steps5` | five true steps, each held `TRJ_STEP_HOLD`, then a Line home and hold | `TRJ_STEP_HOLD` (5 s) |
+| `circle` | Line to the +X edge, `TRJ_CIR_TURNS` turns of radius `TRJ_CIR_R` around home in exactly `TRJ_CIR_T` at constant rate, Line home | `TRJ_CIR_R/T/TURNS` (1.0 m, 60 s, 5) |
+| `figure8` | Line to home, then `x = a_x sin φ`, `y = a_y sin 2φ` around home, `TRJ_F8_TURNS` cycles in exactly `TRJ_F8_T` at constant rate, ending at home | `TRJ_F8_AX/AY/T/TURNS` (0.8 m, 1.2 m, 90 s, 5) |
 
 `TRJ_HOME_X/Y/Z/YAW` default to (0, 0, −1.2, 0). The `steps5` references are
 fixed: (0, 0, −1.2), (1, 0, −1.2), (1, 1, −1.2), (0, 1, −1.2) and
 (0, 0, −0.9). The first is taken immediately when the command is applied.
 
-**Plans** (`trajectory/Catalog.cpp`). Every segment is a degree-9 two-point
-Hermite polynomial (`p = E(u) + (1−u)⁵ F(u)`, C4 at both ends), optionally
-carrying a circle or figure-eight driven by a Hermite phase. This gives
-analytic velocity, acceleration, jerk and snap everywhere.
+**Plans** (`trajectory/Catalog.cpp`, sampled by `trajectory/Sampler.cpp`).
+A plan is a short sequence of segments; each starts at the pose where the
+previous one ended.
 
-- **Circle and figure-eight:**
-  1. **Entry:** a C4 transition from the current reference (position through
-     snap, yaw through yaw acceleration) to rest on the pattern.
-  2. **Ramp-up:** a phase ramp along the pattern to the nominal rate
-     `w = 2π·turns / T`. The phase rate follows the C3 smooth step.
-  3. **Pattern:** exactly `TRJ_*_T` seconds at the constant rate, covering
-     phase [0, 2π·turns].
-  4. **Ramp-down:** the reverse phase ramp to rest on the pattern.
-  5. **Return:** a C4 transition home, which is then held.
+| Segment | Motion | Time scale |
+|---|---|---|
+| Hold | stationary | — |
+| Step | jumps by its offset at its start, then stationary | — |
+| Line, Yaw | position offset or yaw rotation, from rest to rest | ninth-order C4 (derivatives through snap vanish at both ends) |
+| Circle, FigureEight | `turns` revolutions/cycles in exactly the segment duration | linear: constant phase rate |
 
-  Entry, ramps and return are not part of the configured duration.
-- **Transition durations** are the shortest (from 2 s, on a 25 % grid, at most
-  30 s) that keep speed and acceleration within 0.6 m/s and 0.6 m/s², and
-  yaw rate within 0.5 rad/s, or within 110 % of the start values if larger.
-  Ramps last at least 2 s and keep the tangential acceleration within
-  0.6 m/s².
+- **steps5:** a hold at the first point and four steps, each lasting
+  `TRJ_STEP_HOLD`, at `TRJ_HOME_YAW`; then a Line home.
+- **circle:** a Yaw rotation to `TRJ_HOME_YAW` in place (if needed), a Line
+  from the current reference position to the circle's +X edge, the circle
+  (`TRJ_CIR_T`), and a Line home.
+- **figure8:** the same Yaw and Line entry, to `TRJ_HOME_*` (the pattern
+  centre), then the figure-eight (`TRJ_F8_T`), which ends at home.
+- **Line and Yaw durations** are fixed by the distance: `max(2 s, d / 0.25 m/s)`
+  and `max(2 s, |Δψ| / 0.25 rad/s)`, so they peak at about 0.62 m/s and
+  0.62 rad/s. Moves shorter than 1 mm (1 mrad) are omitted.
+- **Intentional discontinuities:** the patterns start and end with a velocity
+  step between rest and the pattern speed (`r ω` = 0.52 m/s for the default
+  circle, 0.88 m/s for the default figure-eight). Entry, pattern and return
+  are each analytic; their joins are continuous in position only.
 - **Parameter snapshot:** all `TRJ_*` values except the live setpoint are
   taken when the command is accepted.
 - **Completion:** a finished plan reports `completed` and holds home at rest.
@@ -479,11 +501,11 @@ Measured flash use (1920 KiB limit):
 
 | Build | Image | Used | Free |
 |---|---|---|---|
-| `px4_fmu-v6c_default` | 1,919,748 B | 97.64% | 46,332 B |
-| `px4_fmu-v6c_se3` | 1,736,780 B | 88.34% | 229,300 B |
+| `px4_fmu-v6c_default` | 1,919,772 B | 97.64% | 46,308 B |
+| `px4_fmu-v6c_se3` | 1,739,868 B | 88.49% | 226,212 B |
 
-Upload was verified only to the extent that the target exists and the image
-metadata matches. It has **not** been run on hardware.
+Both build without compiler warnings. Upload has **not** been run on
+hardware.
 
 ## Logging
 
@@ -506,9 +528,10 @@ PHYSICAL owns allocation, so other modes carry no extra load.
 topics above that rate are therefore decimated; `timestamp_sample` gaps in the
 ULog show the actual rate.
 
-**SITL caveat.** SITL starts the logger with `-p ekf2_timestamps`, which
-ignores per-topic intervals. SITL logs record everything at the estimator rate
-(~250 Hz) and do not reflect hardware logging rates.
+**SITL.** SITL logs honour the per-topic intervals above (measured:
+`se3_trajectory_status` 98–100 Hz, `vehicle_attitude_setpoint` 19.5 Hz,
+`trajectory_setpoint` 4.9 Hz, unlisted topics such as `actuator_motors` at
+about 49 Hz). Use `uorb top` for the actual publication rates.
 
 ## Validation
 
@@ -519,67 +542,92 @@ make tests TESTFILTER=Se3Math
 make tests TESTFILTER=PhysicalAllocation
 ```
 
-- **Se3Math:**
-  - trajectory derivatives;
-  - attitude-reference derivatives against finite differences;
-  - body-rate and Lee moment terms;
-  - `SE3_CTRL` mapping, per-path controllers, and an exhaustive check that the
-    RATE_PX4 publish predicate equals the original;
-  - allocator ownership for each path, including the fault fallback.
-- **PhysicalAllocation:**
-  - model constants and thrust inversion;
-  - invalid models;
-  - effectiveness signs;
-  - exact reproduction of feasible wrenches and the desaturation priorities;
-  - ownership, an unavailable wrench input, and stale-command freshness.
+- **Se3Math** (29 tests):
+  - trajectories: the catalog, agreed defaults and plan layouts, true steps
+    at 5 s, exactly five circle turns and figure-eight cycles at constant
+    rate, analytic derivatives against finite differences, the Yaw/Line
+    entry, direct replacement (position kept, velocity discontinuity
+    explicit), measured-pose hold and invalid settings;
+  - the bounded integral (applied rate equals the actual change, bounds,
+    freeze and resume) and the position integral (signs, bound step, reset,
+    zero-gain equivalence with the non-integral controller), and force
+    derivatives including the integral;
+  - attitude-reference derivatives against finite differences, body-rate and
+    Lee moment terms with and without the attitude integral;
+  - `SE3_CTRL` mapping, per-path controllers, an exhaustive check that the
+    RATE_PX4 publish predicate equals the original, and allocator ownership
+    for each path, including the fault fallback.
+- **PhysicalAllocation** (14 tests): effectiveness signs, linear thrust,
+  invalid models, small SI coefficients below the native filter threshold,
+  exact reproduction of feasible wrenches, desaturation priorities,
+  saturation feedback from the published (slew-limited or stopped) commands,
+  ownership, an unavailable wrench input and stale-command freshness.
+
+The native `ControlAllocation*` and `ActuatorEffectiveness*` tests also pass.
 
 ### Gazebo F450 SITL
 
-Headless `gz_f450` SITL with external-vision EKF2. Each run flew: takeoff,
-Position, select, hold, circle, figure8, live position and 2.5 rad yaw steps,
-pilot return to Position, controller fault, state fault.
+Headless `gz_f450` SITL with external-vision EKF2, default `SE3_*`/`TRJ_*`
+values, `MIS_TAKEOFF_ALT = 1.2` (so the hover matches `TRJ_HOME_Z`), driven
+from the PX4 shell. Each path flew one campaign: native takeoff, Position,
+`select` and passive hold, live setpoint edits (x 0.5 m, yaw 0.5 rad,
+z −0.3 m, then back), `steps5`, `circle` to completion, `figure8` replaced
+directly by `circle` and then by `hold`, `figure8` to completion, return to
+Position, re-selection and a controller fault; then a second flight with a
+state fault (PHYSICAL: allocation fault). Results are from the ULogs
+(`se3_trajectory_status` reference against `vehicle_local_position`).
 
-| | ATTITUDE_PX4 | RATE_PX4 | PHYSICAL |
-|---|---|---|---|
-| Hold, position error RMS | 0.057 m | 0.041 m | 0.008 m |
-| Circle, position error RMS | 0.111 m | 0.104 m | 0.092 m |
-| Figure-8, position error RMS | 0.086 m | 0.093 m | 0.076 m |
-| Rate-setpoint source | `mc_att_control` at the attitude rate | SE3 at 100 Hz | none (rate loop off) |
-| Allocation | native | native | physical, 249.9 Hz (gyro rate) |
+| Position error RMS | ATTITUDE_PX4 | RATE_PX4 | PHYSICAL | PHYSICAL, matched thrust curve¹ |
+|---|---|---|---|---|
+| Hold (12 s) | 0.036 m | 0.028 m | 0.616 m (vertical) | 0.021 m |
+| Circle run (68 s, 4.999 turns) | 0.025 m | 0.035 m | 0.452 m (0.046 m horizontal) | 0.028 m |
+| Figure-eight run (94 s) | 0.027 m | 0.039 m | 0.456 m (0.055 m horizontal) | 0.032 m |
 
-- **RATE_PX4 regression.** Identical flights on the pre-change implementation
-  gave the same mode timeline, fault behavior and topic rates, with
-  rate-setpoint RMS within 0.005 rad/s. The tracking differences are run-to-run
-  noise.
-- **Fault responses:**
-  - Controller fault: Position accepted after about 24 ms.
-  - State fault: PX4 failsafe (Land).
-  - PHYSICAL allocation fault (unknown model): native rate control after
-    12 ms, Position after 24 ms, no motor-command gap above 8 ms.
-  - PHYSICAL total gyro loss (`sensors stop`): detected 36 ms after the last
-    sample; Position was rejected, and Commander terminated the flight.
-- **Position handoff:** under 4 cm drift over 5 s in every path.
-- **Model checks against Gazebo:**
-  - Roll/pitch angular acceleration fits the achieved moment with a gain of
-    about 0.91 and about 20 ms delay. The delay is the motor time constant,
-    one simulation step and the gyro filter.
-  - Yaw fits with a gain of 0.998.
-  - Yaw authority at hover is about 0.27 N m, so large yaw steps saturate the
-    yaw axis (`yaw_scale < 1`).
+¹ Runtime-only `THR_MDL_FAC = 0.72` and `MPC_THR_HOVER = 0.42` (see
+Thrust-model accuracy); hold, circle and figure-eight only.
+
+- **References:** `steps5` visited exactly the five points, changing at 5.01,
+  10.01, 15.01 and 20.01 s. The circle swept 4.999 turns at a constant
+  0.524 m/s for 59.99 s; the figure-eight had amplitudes 0.800 × 1.200 m over
+  89.99 s. Velocity steps occurred only where intended: 0.52 m/s at circle
+  start and end, 0.88 m/s at figure-eight start, and 0.44–0.52 m/s on direct
+  replacement of a moving reference. Position stayed continuous (≤ 5 mm) at
+  every circle/figure-eight entry.
+- **Publications in SE3** (`uorb top`):
+  - ATTITUDE_PX4: SE3 `vehicle_attitude_setpoint` at 100 Hz; `vehicle_rates_setpoint` at 250 Hz from `mc_att_control`.
+  - RATE_PX4: SE3 `vehicle_rates_setpoint` at 100 Hz; torque, thrust and `actuator_motors` at 250 Hz.
+  - PHYSICAL: `se3_wrench_setpoint`, `se3_allocation_status` and `actuator_motors` at 250 Hz (inner interval 4.000 ms); no `vehicle_torque_setpoint`, which resumed at 250 Hz as soon as SE3 was left.
+- **Allocation (PHYSICAL):** every wrench compatible and valid. The
+  achieved wrench equalled the request except during the 90° yaw step of the
+  first setpoint (yaw scaled in 0.16 % of samples, as intended by the yaw
+  priority); roll/pitch were never scaled and thrust never limited.
+- **Integrals:** the position integral froze only in ATTITUDE_PX4 during that
+  yaw step (0.4 % of the setpoint run). The PHYSICAL attitude integral stayed
+  below 0.033 N m.
+- **Fault responses** (last SE3 reference to the mode change): controller
+  fault to Position in 32–36 ms (PHYSICAL also switched to the PX4 rate
+  controller first); state fault to Commander's Land failsafe in 68–72 ms;
+  PHYSICAL allocation fault to Position in 28 ms. Each fault stayed latched
+  until disarm.
 
 ### Known limitations
 
 - **All closed-loop evidence is from Gazebo SITL with the Gazebo F450 model.**
-  Nothing has been flown or bench-tested on hardware.
-  - PHYSICAL has no hardware model. On hardware the Gazebo model's required
-    parameters (`SYS_AUTOSTART=4022`, `SIM_GZ_EC_*`) do not match, so SE3
-    reports itself unhealthy and PHYSICAL cannot be selected.
-  - On hardware, the gyro-triggered rates follow `IMU_GYRO_RATEMAX`, and the
-    attitude loop follows the estimator rate; neither has been measured.
-- **Not exercised in SITL:** a work-queue stall and a forced disarm in flight.
-  After the gyro-loss test the SITL logger stops with the IMU, so motor
-  outputs after that event are not in the log.
+  Nothing has been flown or bench-tested on hardware. The FMUv6C SE3 image
+  builds but has not been uploaded or run.
+- **PHYSICAL needs a correct thrust curve.** With the `4022_gz_f450` default
+  `THR_MDL_FAC = 0`, PHYSICAL holds about 0.45 m below its reference with the
+  vertical integral at its bound (see Validation). Matching `THR_MDL_FAC`
+  (0.72 for this model) removes the error but changes native control of the
+  airframe too (`MPC_THR_HOVER` becomes about 0.42); the airframe defaults
+  have not been changed.
+- **PHYSICAL vehicle parameters** (`SE3_MASS`, `SE3_J*`, `CA_ROTOR*_CT/KM`,
+  `THR_MDL_FAC`) are known only for the Gazebo F450.
+- **Trajectory discontinuities are intentional:** steps, the velocity steps at
+  pattern start and end, and on direct replacement of a moving reference.
+- **Not exercised in SITL:** a work-queue stall, gyro loss, a forced disarm in
+  flight and motor failure.
 - **Allocation:** yaw has the lowest priority with no thrust-for-yaw margin,
   and the physical path ignores `MC_AIRMODE`.
-- **Gazebo model gaps:** motor dynamics, rotor drag and speed quantization are
-  not in the model and appear as a reduced effective roll/pitch gain with delay.
+- On hardware, the gyro-triggered rates follow `IMU_GYRO_RATEMAX` and the
+  attitude loop follows the estimator rate; neither has been measured.

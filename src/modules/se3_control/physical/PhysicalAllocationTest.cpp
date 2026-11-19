@@ -208,6 +208,84 @@ TEST(PhysicalAllocation, InvalidEffectivenessAndLimitsAreRejected)
 	EXPECT_TRUE(allocation.configured());
 }
 
+TEST(PhysicalAllocation, SmallSiCoefficientsAreAllocated)
+{
+	// A small vehicle whose yaw coefficients CT KM are below control_allocator's
+	// 0.05 weak-authority threshold: PHYSICAL must receive them unfiltered.
+	Rotor rotors[kRotorCount];
+	f450_rotors(rotors);
+
+	for (Rotor &rotor : rotors) {
+		rotor.ct = 1.5f;
+		rotor.km = copysignf(0.016f, rotor.km);
+	}
+
+	const Effectiveness E = effectiveness(rotors);
+
+	for (int i = 0; i < kRotorCount; ++i) { ASSERT_LT(fabsf(E(2, i)), 0.05f); }
+
+	Allocation allocation;
+	ASSERT_TRUE(allocation.configure(E, kMinimum, kMaximum));
+	const matrix::Vector3f moment{0.02f, -0.01f, 0.005f};
+	const AllocationResult result = allocate(allocation, 4.f, moment);
+	expect_wrench(result.achieved, 4.f, moment, 1e-5f);
+	EXPECT_FLOAT_EQ(result.yaw_scale, 1.f);
+
+	// The same matrix after the native filter (yaw row zeroed) is singular.
+	Effectiveness filtered = E;
+	filtered.row(2) = 0.f;
+	EXPECT_FALSE(allocation.configure(filtered, kMinimum, kMaximum));
+}
+
+TEST(PhysicalAllocation, FinalCommandsDetermineSaturationFeedback)
+{
+	const Allocation allocation = configured();
+	const Wrench request{weight(), {0.4f, -0.3f, 0.1f}};
+	AllocationResult allocated{};
+	ASSERT_TRUE(allocation.allocate(request, allocated));
+	ASSERT_FLOAT_EQ(allocated.roll_pitch_scale, 1.f);
+	ASSERT_FLOAT_EQ(allocated.yaw_scale, 1.f);
+
+	// Unchanged commands leave the feedback unchanged.
+	AllocationResult same = allocated;
+	allocation.apply_commands(request, allocated.command, same);
+	EXPECT_FLOAT_EQ(same.roll_pitch_scale, 1.f);
+	EXPECT_FLOAT_EQ(same.yaw_scale, 1.f);
+	EXPECT_FALSE(same.thrust_limited);
+	expect_wrench(same.achieved, request.thrust, request.moment, 1e-4f);
+
+	// Slew limiting halfway from hover: about half of each moment is achieved,
+	// the collective is preserved, and the feedback reports the final wrench.
+	const AllocationResult hover = allocate(allocation, weight(), {});
+	float limited[kRotorCount];
+
+	for (int i = 0; i < kRotorCount; ++i) { limited[i] = 0.5f * (hover.command[i] + allocated.command[i]); }
+
+	AllocationResult slewed = allocated;
+	allocation.apply_commands(request, limited, slewed);
+	EXPECT_NEAR(slewed.roll_pitch_scale, 0.5f, 1e-4f);
+	EXPECT_NEAR(slewed.yaw_scale, 0.5f, 1e-4f);
+	EXPECT_FALSE(slewed.thrust_limited);
+	expect_wrench(slewed.achieved, request.thrust, request.moment * 0.5f, 1e-4f);
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		EXPECT_FLOAT_EQ(slewed.command[i], limited[i]);
+		EXPECT_FLOAT_EQ(slewed.rotor_thrust[i], allocation.rotor_thrust(i, limited[i]));
+	}
+
+	// A stopped motor removes its thrust and moments.
+	float stopped[kRotorCount];
+
+	for (int i = 0; i < kRotorCount; ++i) { stopped[i] = allocated.command[i]; }
+
+	stopped[0] = 0.f;
+	AllocationResult failed = allocated;
+	allocation.apply_commands(request, stopped, failed);
+	EXPECT_TRUE(failed.thrust_limited);
+	EXPECT_LT(failed.achieved.thrust, request.thrust);
+	EXPECT_LT(failed.yaw_scale, 1.f);
+}
+
 TEST(PhysicalAllocation, HoverAndMomentDirections)
 {
 	const Allocation allocation = configured();

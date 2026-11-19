@@ -35,13 +35,6 @@ public:
     const Vector3 & attitude_integral,
     PhysicalMomentOutput & output);
 
-  // Direct PX4-normalized body torque command.
-  static bool normalized(
-    const State & state,
-    const DesiredAttitudeDynamics & desired,
-    const NormalizedAttitudeGains & gains,
-    NormalizedTorqueOutput & output);
-
 };
 
 }  // namespace se3_control

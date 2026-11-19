@@ -72,6 +72,13 @@ public:
 	// Returns false for an unconfigured allocation or a non-finite request.
 	bool allocate(const Wrench &request, AllocationResult &result) const;
 
+	// Replace the allocated commands in result with the commands finally
+	// published (after slew limiting, clipping or stopped motors) and update
+	// the achieved wrench, rotor thrust and saturation feedback to match. A
+	// changed command caps each scale at the fraction of the requested moment
+	// that the final wrench achieves along it.
+	void apply_commands(const Wrench &request, const float command[kRotorCount], AllocationResult &result) const;
+
 	// Wrench produced by the given motor commands.
 	Wrench wrench(const float command[kRotorCount]) const;
 

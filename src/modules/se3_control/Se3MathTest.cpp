@@ -84,7 +84,7 @@ Trajectory build(TrajectoryId id, const Reference &start, const Settings &settin
 Reference sample(const Trajectory &plan, float time_s)
 {
 	Reference reference{};
-	EXPECT_TRUE(trajectory_generator::sample(plan.sequence, time_s, reference));
+	EXPECT_TRUE(trajectory_generator::sample(plan.sequence, time_s, plan.origin, reference));
 	return reference;
 }
 
@@ -98,21 +98,18 @@ float segment_start(const Trajectory &plan, std::size_t index)
 	return start;
 }
 
-// The constant-rate pattern segment: the longest shaped one.
+// The constant-rate circle or figure-eight segment (count if none).
 std::size_t pattern_segment(const Trajectory &plan)
 {
-	std::size_t best = plan.sequence.count;
-
 	for (std::size_t i = 0; i < plan.sequence.count; ++i) {
-		const Segment &segment = plan.sequence.segments[i];
+		const Segment::Type type = plan.sequence.segments[i].type;
 
-		if (segment.shape != Segment::Shape::None &&
-		    (best == plan.sequence.count || segment.duration_s > plan.sequence.segments[best].duration_s)) {
-			best = i;
+		if (type == Segment::Type::Circle || type == Segment::Type::FigureEight) {
+			return i;
 		}
 	}
 
-	return best;
+	return plan.sequence.count;
 }
 
 void expect_near(const Vector3 &actual, const Vector3 &expected, float tolerance)
@@ -226,18 +223,66 @@ TEST(Se3Trajectory, CatalogHasExactlyTheFourTrajectories)
 	EXPECT_FALSE(trajectory_generator::build_trajectory(-1, default_settings(), home(), plan));
 }
 
+TEST(Se3Trajectory, DefaultPlansMatchTheExperimentDefinitions)
+{
+	// Steps5: a hold and four steps of TRJ_STEP_HOLD = 5 s, then a 0.3 m Line
+	// home (2 s minimum).
+	const Trajectory steps = build(TrajectoryId::Steps5, home());
+	ASSERT_EQ(steps.sequence.count, 6u);
+	EXPECT_EQ(steps.sequence.segments[0].type, Segment::Type::Hold);
+
+	for (int k = 0; k < 5; ++k) {
+		EXPECT_FLOAT_EQ(steps.sequence.segments[k].duration_s, 5.0f) << k;
+
+		if (k > 0) { EXPECT_EQ(steps.sequence.segments[k].type, Segment::Type::Step) << k; }
+	}
+
+	EXPECT_EQ(steps.sequence.segments[5].type, Segment::Type::Line);
+	EXPECT_FLOAT_EQ(steps.duration_s, 27.0f);
+
+	// Circle from home: a 1 m Line to the +x edge (4 s), five turns of radius
+	// 1 m in 60 s, and the 1 m Line back.
+	const Trajectory circle = build(TrajectoryId::Circle, home());
+	ASSERT_EQ(circle.sequence.count, 3u);
+	EXPECT_EQ(circle.sequence.segments[0].type, Segment::Type::Line);
+	EXPECT_EQ(circle.sequence.segments[1].type, Segment::Type::Circle);
+	EXPECT_FLOAT_EQ(circle.sequence.segments[1].duration_s, 60.0f);
+	EXPECT_FLOAT_EQ(circle.sequence.segments[1].radius_m, 1.0f);
+	EXPECT_FLOAT_EQ(circle.sequence.segments[1].turns, 5.0f);
+	EXPECT_EQ(circle.sequence.segments[2].type, Segment::Type::Line);
+	EXPECT_FLOAT_EQ(circle.duration_s, 68.0f);
+
+	// Figure-eight from home: no entry move; five cycles of 0.8 x 1.2 m in 90 s.
+	const Trajectory figure = build(TrajectoryId::Figure8, home());
+	ASSERT_EQ(figure.sequence.count, 1u);
+	EXPECT_EQ(figure.sequence.segments[0].type, Segment::Type::FigureEight);
+	EXPECT_FLOAT_EQ(figure.sequence.segments[0].duration_s, 90.0f);
+	EXPECT_FLOAT_EQ(figure.sequence.segments[0].x_amplitude_m, 0.8f);
+	EXPECT_FLOAT_EQ(figure.sequence.segments[0].y_amplitude_m, 1.2f);
+	EXPECT_FLOAT_EQ(figure.sequence.segments[0].turns, 5.0f);
+	EXPECT_FLOAT_EQ(figure.duration_s, 90.0f);
+}
+
 TEST(Se3Trajectory, SetpointIsAnImmediateStep)
 {
 	const Reference start = stationary(0.4f, -0.3f, -1.5f, 0.6f);
 	const Trajectory plan = build(TrajectoryId::Setpoint, start);
 
-	// TRJ_SP_* at once, then held at rest.
+	// TRJ_SP_* at once, then held at rest (the runtime replaces it with live
+	// TRJ_SP_* edits and never completes it).
 	for (float t : {0.0f, 0.5f, 100.0f}) {
 		expect_at_rest(sample(plan, t), stationary(0.0f, 0.0f, -1.0f, 0.0f), 1e-6f);
 	}
+
+	// A different snapshot is a different immediate step.
+	Settings moved = default_settings();
+	moved.sp_x = 0.5f;
+	moved.sp_yaw = 1.0f;
+	expect_at_rest(sample(build(TrajectoryId::Setpoint, start, moved), 0.0f), stationary(0.5f, 0.0f, -1.0f, 1.0f),
+		       1e-6f);
 }
 
-TEST(Se3Trajectory, Steps5AreTrueStepsThenASmoothReturnHome)
+TEST(Se3Trajectory, Steps5AreTrueStepsThenALineHome)
 {
 	constexpr float steps[5][3] {
 		{0.0f, 0.0f, -1.2f}, {1.0f, 0.0f, -1.2f}, {1.0f, 1.0f, -1.2f}, {0.0f, 1.0f, -1.2f}, {0.0f, 0.0f, -0.9f}
@@ -246,8 +291,6 @@ TEST(Se3Trajectory, Steps5AreTrueStepsThenASmoothReturnHome)
 	start.velocity = {{0.4f, 0.1f, 0.0f}};
 	const Trajectory plan = build(TrajectoryId::Steps5, start);
 	const float hold = 5.0f;
-
-	ASSERT_EQ(plan.sequence.count, 6u); // Five holds and the return.
 
 	// Step 1 is taken immediately, without interpolating from the start.
 	expect_at_rest(sample(plan, 0.0f), stationary(steps[0][0], steps[0][1], steps[0][2]), 1e-6f);
@@ -264,106 +307,147 @@ TEST(Se3Trajectory, Steps5AreTrueStepsThenASmoothReturnHome)
 		}
 	}
 
-	// After step 5: a C4 return to home, then home is held.
+	// After step 5: a Line from rest to rest at home, then home is held.
 	const float return_start = 5.0f * hold;
-	const float return_end = plan.duration_s;
-	EXPECT_GT(return_end, return_start + 1.0f);
-	Reference begin{};
-	ASSERT_TRUE(trajectory_generator::sample_segment(plan.sequence.segments[5], 0.0f, begin));
-	expect_at_rest(begin, stationary(0.0f, 0.0f, -0.9f), 1e-5f);
-	expect_at_rest(sample(plan, return_end), home(), 1e-5f);
-	expect_at_rest(sample(plan, return_end + 1000.0f), home(), 1e-6f);
-	expect_consistent_derivatives(plan, return_start + 0.01f, return_end - 0.01f, 20);
+	expect_at_rest(sample(plan, return_start), stationary(0.0f, 0.0f, -0.9f), 1e-6f);
+	expect_at_rest(sample(plan, plan.duration_s), home(), 1e-5f);
+	expect_at_rest(sample(plan, plan.duration_s + 1000.0f), home(), 1e-6f);
+	expect_consistent_derivatives(plan, return_start + 0.01f, plan.duration_s - 0.01f, 20);
 
 	EXPECT_EQ(trajectory_generator::segment_index(plan.sequence, 2.0f), 0u);
 	EXPECT_EQ(trajectory_generator::segment_index(plan.sequence, return_start + 0.5f), 5u);
-	EXPECT_EQ(trajectory_generator::segment_index(plan.sequence, return_end + 1.0f), 6u);
+	EXPECT_EQ(trajectory_generator::segment_index(plan.sequence, plan.duration_s + 1.0f), 6u);
 }
 
-TEST(Se3Trajectory, CircleHasTheConfiguredTurnsDurationAndRadius)
+TEST(Se3Trajectory, CircleRunsExactlyFiveTurnsAtConstantRate)
 {
 	const Trajectory plan = build(TrajectoryId::Circle, home());
 	const std::size_t index = pattern_segment(plan);
 	ASSERT_LT(index, plan.sequence.count);
-	const Segment &pattern = plan.sequence.segments[index];
-	EXPECT_EQ(pattern.shape, Segment::Shape::Circle);
-	EXPECT_FLOAT_EQ(pattern.duration_s, 60.0f);
-	EXPECT_FLOAT_EQ(pattern.x_amplitude_m, 1.0f);
-
-	// Five turns at the constant rate 2 pi 5 / 60 around home: speed r w and
-	// radius r throughout the pattern, which starts at phase 0 (+x).
 	const float begin = segment_start(plan, index);
-	const float rate = 2.0f * kPi * 5.0f / 60.0f;
-	expect_near(vec(sample(plan, begin).position), Vector3{1.0f, 0.0f, -1.2f}, 1e-4f);
-	expect_near(vec(sample(plan, begin + 60.0f).position), Vector3{1.0f, 0.0f, -1.2f}, 2e-3f);
+	const float end = begin + 60.0f;
+	const float r = 1.0f;
+	const float w = 2.0f * kPi * 5.0f / 60.0f;
+	const Vector3 centre{0.0f, 0.0f, -1.2f};
 
-	for (int k = 0; k <= 60; ++k) {
-		const Reference reference = sample(plan, begin + static_cast<float>(k));
-		const Vector3 offset = vec(reference.position) - Vector3{0.0f, 0.0f, -1.2f};
-		EXPECT_NEAR(offset.norm(), 1.0f, 1e-4f);
-		EXPECT_NEAR(vec(reference.velocity).norm(), rate, 1e-4f);
-		EXPECT_NEAR(vec(reference.acceleration).norm(), rate * rate, 1e-4f);
+	// Constant angular rate w over the whole 60 s, including its first and
+	// last instants: radius, speed and every derivative magnitude are constant.
+	float swept = 0.0f;
+	Vector3 previous = vec(sample(plan, begin).position) - centre;
+
+	for (int k = 1; k <= 600; ++k) {
+		const Reference reference = sample(plan, begin + 0.1f * static_cast<float>(k));
+		const Vector3 offset = vec(reference.position) - centre;
+		swept += std::atan2(previous(0) * offset(1) - previous(1) * offset(0), previous.dot(offset));
+		previous = offset;
+		EXPECT_NEAR(offset.norm(), r, 1e-4f);
+		EXPECT_NEAR(vec(reference.velocity).norm(), r * w, 1e-5f);
+		EXPECT_NEAR(vec(reference.acceleration).norm(), r * w * w, 1e-5f);
+		EXPECT_NEAR(vec(reference.jerk).norm(), r * w * w * w, 1e-5f);
+		EXPECT_NEAR(vec(reference.snap).norm(), r * w * w * w * w, 1e-5f);
 		EXPECT_FLOAT_EQ(reference.yaw, 0.0f);
 	}
 
-	// Entry and return are outside the 60 s; the plan starts at the current
-	// reference and ends at rest at home.
-	EXPECT_GT(plan.duration_s, 60.0f + 4.0f);
-	expect_same_state(sample(plan, 0.0f), home(), 1e-5f);
-	expect_at_rest(sample(plan, plan.duration_s), home(), 1e-5f);
-	expect_at_rest(sample(plan, plan.duration_s + 10.0f), home(), 1e-6f);
-	expect_consistent_derivatives(plan, 0.0f, plan.duration_s, 300);
+	EXPECT_NEAR(swept, 2.0f * kPi * 5.0f, 1e-3f); // Exactly five revolutions.
+
+	// Analytic derivatives at phase 0 (+x edge) and their consistency inside
+	// the pattern.
+	const Reference first = sample(plan, begin + 1.0e-6f);
+	expect_near(vec(first.position), Vector3{1.0f, 0.0f, -1.2f}, 1e-4f);
+	expect_near(vec(first.velocity), Vector3{0.0f, r * w, 0.0f}, 1e-4f);
+	expect_near(vec(first.acceleration), Vector3{-r * w * w, 0.0f, 0.0f}, 1e-4f);
+	expect_near(vec(first.jerk), Vector3{0.0f, -r * w * w * w, 0.0f}, 1e-4f);
+	expect_near(vec(first.snap), Vector3{r * w * w * w * w, 0.0f, 0.0f}, 1e-4f);
+	expect_consistent_derivatives(plan, begin + 0.01f, end - 0.01f, 200);
+
+	// Intentional discontinuity: the entry Line ends at rest and the circle
+	// starts at speed r w (and the reverse at its end). Position is continuous.
+	expect_at_rest(sample(plan, begin), stationary(1.0f, 0.0f, -1.2f), 1e-5f);
+	expect_near(vec(sample(plan, end).position), Vector3{1.0f, 0.0f, -1.2f}, 2e-3f);
+	EXPECT_NEAR(vec(sample(plan, end).velocity).norm(), r * w, 1e-4f);
+	EXPECT_NEAR(vec(sample(plan, end + 1.0e-3f).velocity).norm(), 0.0f, 1e-3f);
+
+	// The entry from home and the return home are smooth Lines.
+	expect_at_rest(sample(plan, 0.0f), home(), 1e-6f);
+	expect_consistent_derivatives(plan, 0.01f, begin - 0.01f, 20);
+	expect_consistent_derivatives(plan, end + 0.01f, plan.duration_s - 0.01f, 20);
+	expect_at_rest(sample(plan, plan.duration_s), home(), 1e-4f);
+	expect_at_rest(sample(plan, plan.duration_s + 10.0f), home(), 1e-4f);
 }
 
-TEST(Se3Trajectory, FigureEightHasTheConfiguredCyclesDurationAndAmplitudes)
+TEST(Se3Trajectory, FigureEightRunsExactlyFiveCyclesAtConstantRate)
 {
 	const Trajectory plan = build(TrajectoryId::Figure8, home());
 	const std::size_t index = pattern_segment(plan);
 	ASSERT_LT(index, plan.sequence.count);
-	const Segment &pattern = plan.sequence.segments[index];
-	EXPECT_EQ(pattern.shape, Segment::Shape::FigureEight);
-	EXPECT_FLOAT_EQ(pattern.duration_s, 90.0f);
-
-	// x = 0.8 sin(phi), y = 1.2 sin(2 phi), phi = 2 pi 5 t / 90, about home.
 	const float begin = segment_start(plan, index);
-	const float rate = 2.0f * kPi * 5.0f / 90.0f;
-	float max_x = 0.0f;
-	float max_y = 0.0f;
+	const float w = 2.0f * kPi * 5.0f / 90.0f;
 
+	// x = 0.8 sin(w t), y = 1.2 sin(2 w t) about home for all 90 s: phase 10 pi
+	// (five cycles) at the end, with the analytic derivatives of that phase.
 	for (int k = 0; k <= 900; ++k) {
 		const float t = 0.1f * static_cast<float>(k);
-		const float phase = rate * t;
+		const float phase = w * t;
 		const Reference reference = sample(plan, begin + t);
-		expect_near(vec(reference.position),
-			    Vector3{0.8f * std::sin(phase), 1.2f * std::sin(2.0f * phase), -1.2f}, 2e-3f);
-		max_x = std::fmax(max_x, std::fabs(reference.position[0]));
-		max_y = std::fmax(max_y, std::fabs(reference.position[1]));
+		const float s1 = std::sin(phase);
+		const float c1 = std::cos(phase);
+		const float s2 = std::sin(2.0f * phase);
+		const float c2 = std::cos(2.0f * phase);
+		expect_near(vec(reference.position), Vector3{0.8f * s1, 1.2f * s2, -1.2f}, 2e-3f);
+		expect_near(vec(reference.velocity), Vector3{0.8f * w * c1, 2.4f * w * c2, 0.0f}, 2e-3f);
+		expect_near(vec(reference.acceleration), Vector3{-0.8f * w * w * s1, -4.8f * w * w * s2, 0.0f}, 2e-3f);
+		expect_near(vec(reference.jerk), Vector3{-0.8f * w * w * w * c1, -9.6f * w * w * w * c2, 0.0f}, 2e-3f);
+		expect_near(vec(reference.snap), Vector3{0.8f * w * w * w * w * s1, 19.2f * w * w * w * w * s2, 0.0f}, 2e-3f);
+		EXPECT_FLOAT_EQ(reference.yaw, 0.0f);
 	}
 
-	EXPECT_NEAR(max_x, 0.8f, 1e-3f);
-	EXPECT_NEAR(max_y, 1.2f, 1e-3f);
+	expect_consistent_derivatives(plan, begin + 0.01f, begin + 90.0f - 0.01f, 200);
 
-	EXPECT_GT(plan.duration_s, 90.0f + 4.0f);
-	expect_same_state(sample(plan, 0.0f), home(), 1e-5f);
-	expect_at_rest(sample(plan, plan.duration_s), home(), 1e-5f);
-	expect_consistent_derivatives(plan, 0.0f, plan.duration_s, 300);
+	// Starts and ends at home; the velocity steps from and to rest there.
+	expect_near(vec(sample(plan, begin).position), Vector3{0.0f, 0.0f, -1.2f}, 1e-5f);
+	EXPECT_GT(vec(sample(plan, begin).velocity).norm(), 0.5f);
+	expect_at_rest(sample(plan, plan.duration_s + 1.0e-3f), home(), 2e-3f);
 }
 
-// Every command may follow every other, at any time, without leaving SE3.
-// Circle and figure-eight continue the current reference exactly (position
-// through snap, yaw through yaw acceleration); setpoint and steps5 step.
-TEST(Se3Trajectory, AnyTrajectoryPreemptsAnyOtherAtAnyTime)
+TEST(Se3Trajectory, PatternEntryTurnsThenMovesFromRest)
+{
+	// From a distant pose: a 2 rad Yaw rotation in place (8 s), then a Line
+	// to the circle's +x edge, both from rest to rest within about 0.6 m/s
+	// and 0.6 rad/s.
+	const Reference start = stationary(2.0f, -1.5f, -2.5f, -2.0f);
+	const Trajectory plan = build(TrajectoryId::Circle, start);
+	ASSERT_EQ(plan.sequence.count, 4u);
+	EXPECT_EQ(plan.sequence.segments[0].type, Segment::Type::Yaw);
+	EXPECT_FLOAT_EQ(plan.sequence.segments[0].duration_s, 8.0f);
+	EXPECT_EQ(plan.sequence.segments[1].type, Segment::Type::Line);
+
+	expect_at_rest(sample(plan, 0.0f), start, 1e-6f);
+	expect_at_rest(sample(plan, 8.0f), stationary(2.0f, -1.5f, -2.5f, 0.0f), 1e-5f);
+	const float begin = segment_start(plan, 2);
+	expect_at_rest(sample(plan, begin), stationary(1.0f, 0.0f, -1.2f, 0.0f), 1e-4f);
+	expect_consistent_derivatives(plan, 0.01f, begin - 0.01f, 40);
+
+	for (int k = 0; k <= 200; ++k) {
+		const Reference reference = sample(plan, begin * static_cast<float>(k) / 200.0f);
+		EXPECT_LE(vec(reference.velocity).norm(), 0.62f);
+		EXPECT_LE(std::fabs(reference.yaw_rate), 0.62f);
+	}
+}
+
+// Every command replaces every other directly, at any time. setpoint and
+// steps5 step to their first point; circle and figure8 continue from the
+// current position and yaw at rest, so a moving reference changes velocity
+// discontinuously (by design: derivatives are not matched).
+TEST(Se3Trajectory, AnyTrajectoryReplacesAnyOtherDirectly)
 {
 	const Reference hold = stationary(0.35f, -0.4f, -1.4f, 2.9f);
 	const TrajectoryId ids[] {TrajectoryId::Setpoint, TrajectoryId::Steps5, TrajectoryId::Circle, TrajectoryId::Figure8};
 
 	for (TrajectoryId from : ids) {
 		const Trajectory active = build(from, hold);
-		const float times[] {0.0f, 0.73f, 3.2f, 7.5f, pattern_time(active, 0.37f), active.duration_s - 1.3f,
-				     active.duration_s + 5.0f};
 
-		for (float t : times) {
-			const Reference current = sample(active, std::fmax(t, 0.0f));
+		for (float t : {0.0f, 0.73f, 7.5f, 0.5f * active.duration_s, active.duration_s + 5.0f}) {
+			const Reference current = sample(active, t);
 
 			for (TrajectoryId to : ids) {
 				const Trajectory next = build(to, current);
@@ -376,55 +460,33 @@ TEST(Se3Trajectory, AnyTrajectoryPreemptsAnyOtherAtAnyTime)
 					expect_at_rest(first, stationary(0.0f, 0.0f, -1.2f), 1e-6f);
 
 				} else {
-					expect_same_state(first, current, 2e-4f);
-					const float entry = segment_start(next, pattern_segment(next));
-					expect_consistent_derivatives(next, 0.0f, entry + 1.0f, 24);
+					// Same position and yaw. At rest, unless the reference is
+					// already at the pattern start, which then begins at once
+					// (velocity step).
+					expect_near(vec(first.position), vec(current.position), 1e-5f);
+					EXPECT_NEAR(first.yaw, current.yaw, 1e-6f);
+
+					if (pattern_segment(next) != 0) {
+						expect_near(vec(first.velocity), Vector3{}, 0.0f);
+						EXPECT_FLOAT_EQ(first.yaw_rate, 0.0f);
+					}
 				}
 
 				// Finite plans end at rest at home.
 				if (to != TrajectoryId::Setpoint) {
-					expect_at_rest(sample(next, next.duration_s + 1.0f), home(), 1e-4f);
+					expect_at_rest(sample(next, next.duration_s + 1.0f), home(), 2e-3f);
 				}
 			}
 		}
 	}
-}
 
-// Entry, ramp and return transitions stay within 0.6 m/s and 0.6 m/s^2, or
-// within 110 % of the start values when those are larger, and last 2..30 s.
-TEST(Se3Trajectory, TransitionsStayWithinTheirLimits)
-{
-	const Reference starts[] {home(), stationary(2.0f, -1.5f, -2.5f, -2.0f),
-				  sample(build(TrajectoryId::Figure8, home()), 30.0f)};
-
-	for (const Reference &start : starts) {
-		for (TrajectoryId id : {TrajectoryId::Circle, TrajectoryId::Figure8}) {
-			const Trajectory plan = build(id, start);
-			const std::size_t pattern = pattern_segment(plan);
-			const float speed_limit = std::fmax(0.6f, 1.1f * vec(start.velocity).norm());
-			const float acceleration_limit = std::fmax(0.6f, 1.1f * vec(start.acceleration).norm());
-
-			for (std::size_t i = 0; i < plan.sequence.count; ++i) {
-				const Segment &segment = plan.sequence.segments[i];
-
-				if (segment.shape != Segment::Shape::None) {
-					continue;
-				}
-
-				EXPECT_GE(segment.duration_s, 2.0f - 1e-4f);
-				EXPECT_LE(segment.duration_s, 30.0f + 1e-4f);
-				const float begin = segment_start(plan, i);
-
-				for (int k = 0; k <= 100; ++k) {
-					const Reference r = sample(plan, begin + segment.duration_s * static_cast<float>(k) / 100.0f);
-					// 32-point duration search: allow a few percent between samples.
-					EXPECT_LE(vec(r.velocity).norm(), 1.05f * (i < pattern ? speed_limit : 0.6f));
-					EXPECT_LE(vec(r.acceleration).norm(), 1.05f * (i < pattern ? acceleration_limit : 0.6f));
-					EXPECT_LE(std::fabs(r.yaw_rate), 1.05f * 0.5f);
-				}
-			}
-		}
-	}
+	// Replacing a moving circle keeps the position but not the velocity.
+	const Trajectory circle = build(TrajectoryId::Circle, home());
+	const Reference moving = sample(circle, pattern_time(circle, 0.3f));
+	ASSERT_GT(vec(moving.velocity).norm(), 0.5f);
+	const Reference replaced = sample(build(TrajectoryId::Figure8, moving), 0.0f);
+	expect_near(vec(replaced.position), vec(moving.position), 1e-6f);
+	expect_near(vec(replaced.velocity), Vector3{}, 0.0f);
 }
 
 TEST(Se3Trajectory, HoldIsStationaryAtTheMeasuredPose)
@@ -438,6 +500,7 @@ TEST(Se3Trajectory, HoldIsStationaryAtTheMeasuredPose)
 	}
 
 	EXPECT_FALSE(trajectory_generator::build_hold({{NAN, 0.0f, -1.0f}}, 0.0f, plan));
+	EXPECT_FALSE(trajectory_generator::build_hold({{0.0f, 0.0f, -1.0f}}, NAN, plan));
 }
 
 TEST(Se3Trajectory, InvalidSettingsAreRejected)
@@ -470,7 +533,7 @@ TEST(Se3Trajectory, InvalidSettingsAreRejected)
 
 	Trajectory plan{};
 	Reference start = home();
-	start.velocity[0] = INFINITY;
+	start.position[0] = INFINITY;
 	EXPECT_FALSE(trajectory_generator::build_trajectory(static_cast<int>(TrajectoryId::Circle), valid, start, plan));
 }
 
@@ -478,33 +541,55 @@ TEST(Se3Integral, BoundedFreezableIntegration)
 {
 	float value = 0.0f;
 
-	// Plain integration inside the bound.
-	EXPECT_TRUE(integrate_bounded(value, 0.5f, 0.1f, 1.0f, false));
+	// Plain integration inside the bound: the applied rate is the input.
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.5f, 0.1f, 1.0f, false), 0.5f);
 	EXPECT_FLOAT_EQ(value, 0.05f);
 
-	// Frozen: unchanged.
-	EXPECT_FALSE(integrate_bounded(value, 0.5f, 0.1f, 1.0f, true));
+	// Frozen: unchanged, rate zero.
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.5f, 0.1f, 1.0f, true), 0.0f);
 	EXPECT_FLOAT_EQ(value, 0.05f);
 
-	// Reaching the bound holds it; further outward input is discarded.
-	EXPECT_FALSE(integrate_bounded(value, 20.0f, 0.1f, 1.0f, false));
+	// The step that reaches the bound applies only the part up to it, and the
+	// reported rate is exactly that change; further outward input is discarded.
+	float before = value;
+	float rate = integrate_bounded(value, 20.0f, 0.1f, 1.0f, false);
 	EXPECT_FLOAT_EQ(value, 1.0f);
-	EXPECT_FALSE(integrate_bounded(value, 0.5f, 0.1f, 1.0f, false));
+	EXPECT_NEAR(rate * 0.1f, value - before, 1e-6f);
+	EXPECT_NEAR(rate, 9.5f, 1e-5f);
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.5f, 0.1f, 1.0f, false), 0.0f);
 	EXPECT_FLOAT_EQ(value, 1.0f);
+
+	// The same at the negative bound.
+	float negative = -0.9f;
+	before = negative;
+	rate = integrate_bounded(negative, -2.0f, 0.1f, 1.0f, false);
+	EXPECT_FLOAT_EQ(negative, -1.0f);
+	EXPECT_NEAR(rate * 0.1f, negative - before, 1e-6f);
 
 	// Input back inside acts immediately (no unwinding delay).
-	EXPECT_TRUE(integrate_bounded(value, -0.5f, 0.1f, 1.0f, false));
+	EXPECT_FLOAT_EQ(integrate_bounded(value, -0.5f, 0.1f, 1.0f, false), -0.5f);
 	EXPECT_FLOAT_EQ(value, 0.95f);
 
+	// Any sequence: the value stays bounded and moves exactly by rate * dt.
+	float walk = 0.0f;
+
+	for (int k = 0; k < 200; ++k) {
+		const float input = 3.0f * sinf(0.1f * static_cast<float>(k)) + 1.0f;
+		const float previous = walk;
+		const float applied = integrate_bounded(walk, input, 0.05f, 0.4f, (k % 17) == 0);
+		ASSERT_LE(fabsf(walk), 0.4f);
+		ASSERT_NEAR(applied * 0.05f, walk - previous, 1e-6f) << k;
+	}
+
 	// A smaller bound (larger gain) clamps; a zero bound (zero gain) resets.
-	EXPECT_FALSE(integrate_bounded(value, 0.0f, 0.1f, 0.5f, true));
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.0f, 0.1f, 0.5f, true), 0.0f);
 	EXPECT_FLOAT_EQ(value, 0.5f);
-	EXPECT_FALSE(integrate_bounded(value, 0.5f, 0.1f, 0.0f, false));
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.5f, 0.1f, 0.0f, false), 0.0f);
 	EXPECT_FLOAT_EQ(value, 0.0f);
 
 	// No time step or non-finite input: nothing integrated.
-	EXPECT_FALSE(integrate_bounded(value, 0.5f, 0.0f, 1.0f, false));
-	EXPECT_FALSE(integrate_bounded(value, NAN, 0.1f, 1.0f, false));
+	EXPECT_FLOAT_EQ(integrate_bounded(value, 0.5f, 0.0f, 1.0f, false), 0.0f);
+	EXPECT_FLOAT_EQ(integrate_bounded(value, NAN, 0.1f, 1.0f, false), 0.0f);
 	EXPECT_FLOAT_EQ(value, 0.0f);
 }
 
@@ -576,6 +661,76 @@ TEST(Se3Controller, PositionIntegralSignsBoundsAndReset)
 	state.velocity(1) = NAN;
 	EXPECT_FALSE(Controller::update_integral(state, reference, gains, 0.01f, false, integral));
 	expect_near(integral.value, previous.value, 0.0f);
+}
+
+TEST(Se3Controller, PositionIntegralBoundaryStepReportsTheAppliedRate)
+{
+	const Reference reference = home();
+	const TranslationGains gains{4.0f, 3.0f, Vector3{0.3f, 0.3f, 0.6f}};
+	const float limit_xy = 1.0f / 0.3f;
+	State state{};
+	state.attitude = matrix::Dcmf{};
+	state.position = Vector3{0.3f, -0.2f, -1.2f};   // e_x = (0.3, -0.2, 0) inside the 0.5 m saturation
+	state.velocity = Vector3{0.1f, 0.2f, 0.0f};
+
+	// One step short of the bound on x and y; the next step crosses it.
+	PositionIntegral integral{};
+	integral.value = Vector3{limit_xy - 0.001f, -limit_xy + 0.0005f, 0.0f};
+	const PositionIntegral before = integral;
+	TranslationOutput previous{};
+	ASSERT_TRUE(Controller::compute_translation(state, reference, gains, before, previous));
+
+	const float dt = 0.01f;
+	ASSERT_TRUE(Controller::update_integral(state, reference, gains, dt, false, integral));
+	EXPECT_FLOAT_EQ(integral.value(0), limit_xy);
+	EXPECT_FLOAT_EQ(integral.value(1), -limit_xy);
+
+	// The reported rate is the change actually applied (not the input 0.3,
+	// and not zero), and no second derivative is reported at the bound.
+	for (int axis = 0; axis < 3; ++axis) {
+		EXPECT_NEAR(integral.rate(axis) * dt, integral.value(axis) - before.value(axis), 1e-6f) << axis;
+	}
+
+	EXPECT_NEAR(integral.rate(0), 0.1f, 1e-3f);
+	EXPECT_NEAR(integral.rate(1), -0.05f, 1e-3f);
+	EXPECT_FLOAT_EQ(integral.rate(2), 0.0f);           // e_x(2) = 0
+	EXPECT_FLOAT_EQ(integral.rate_derivative(0), 0.0f);
+	EXPECT_FLOAT_EQ(integral.rate_derivative(1), 0.0f);
+
+	// The integral acceleration changed by exactly -k_i dI/dt dt, the integral
+	// term of the analytic first force derivative.
+	TranslationOutput current{};
+	ASSERT_TRUE(Controller::compute_translation(state, reference, gains, integral, current));
+	expect_near(current.integral - previous.integral, -gains.integral.emult(integral.rate) * dt, 1e-6f);
+
+	ForceDerivatives with{};
+	ForceDerivatives without{};
+	PositionIntegral no_rates = integral;
+	no_rates.rate.setZero();
+	no_rates.rate_derivative.setZero();
+	ASSERT_TRUE(Controller::compute_force_derivatives(state, reference, gains, integral, current, with));
+	ASSERT_TRUE(Controller::compute_force_derivatives(state, reference, gains, no_rates, current, without));
+	expect_near(with.first - without.first, -gains.integral.emult(integral.rate), 1e-6f);
+
+	// Held at the bound against further outward error: no change, zero rates.
+	const PositionIntegral held = integral;
+	ASSERT_TRUE(Controller::update_integral(state, reference, gains, dt, false, integral));
+	expect_near(integral.value, held.value, 0.0f);
+	EXPECT_FLOAT_EQ(integral.rate(0), 0.0f);
+	EXPECT_FLOAT_EQ(integral.rate(1), 0.0f);
+
+	// Freeze, then resume: frozen steps change nothing; resuming with an error
+	// back inside integrates at sat(e_x) with d^2I/dt^2 = e_v again.
+	state.position = Vector3{-0.2f, 0.1f, -1.2f};
+	ASSERT_TRUE(Controller::update_integral(state, reference, gains, dt, true, integral));
+	expect_near(integral.value, held.value, 0.0f);
+	expect_near(integral.rate, Vector3{}, 0.0f);
+	ASSERT_TRUE(Controller::update_integral(state, reference, gains, dt, false, integral));
+	EXPECT_FLOAT_EQ(integral.rate(0), -0.2f);
+	EXPECT_FLOAT_EQ(integral.rate(1), 0.1f);
+	EXPECT_FLOAT_EQ(integral.rate_derivative(0), 0.1f);
+	EXPECT_FLOAT_EQ(integral.rate_derivative(1), 0.2f);
+	EXPECT_LT(fabsf(integral.value(0)), limit_xy);
 }
 
 namespace
@@ -1070,4 +1225,50 @@ TEST(Se3ControlPath, OnlyUnfaultedPhysicalOwnsTheAllocator)
   EXPECT_FALSE(owns(mode_controllers(ControlPath::Physical, true)));   // Fault handoff
   EXPECT_FALSE(owns(mode_controllers(ControlPath::RatePx4, false)));
   EXPECT_FALSE(owns(mode_controllers(ControlPath::AttitudePx4, false)));
+}
+
+TEST(Se3Controller, ZeroIntegralGainsEqualTheNonIntegralController)
+{
+	const Trajectory plan = build(TrajectoryId::Figure8, home());
+	const Reference reference = sample(plan, pattern_time(plan, 0.3f));
+	const TranslationGains plain{4.0f, 3.0f, Vector3{}};
+	State state{};
+	state.position = vec(reference.position) + Vector3{0.4f, -0.3f, 0.2f};
+	state.velocity = vec(reference.velocity) + Vector3{0.1f, 0.05f, -0.1f};
+	state.attitude = matrix::Dcmf{matrix::Eulerf{0.05f, -0.04f, 0.2f}};
+	state.angular_velocity = Vector3{0.1f, -0.05f, 0.02f};
+
+	// A previously accumulated integral is cleared by zero gains, so the
+	// geometry is exactly the controller without the integral term.
+	PositionIntegral integral{};
+	integral.value = Vector3{0.5f, -0.4f, 0.3f};
+	integral.rate = Vector3{0.1f, 0.1f, 0.1f};
+	integral.rate_derivative = Vector3{0.2f, 0.2f, 0.2f};
+	ASSERT_TRUE(Controller::update_integral(state, reference, plain, 0.01f, false, integral));
+	expect_near(integral.value, Vector3{}, 0.0f);
+	expect_near(integral.rate, Vector3{}, 0.0f);
+	expect_near(integral.rate_derivative, Vector3{}, 0.0f);
+
+	GeometricOutput with{};
+	GeometricOutput without{};
+	ASSERT_TRUE(Controller::compute_geometry(state, reference, plain, integral, with));
+	ASSERT_TRUE(Controller::compute_geometry(state, reference, plain, PositionIntegral{}, without));
+	expect_near(with.translation.integral, Vector3{}, 0.0f);
+	expect_near(with.translation.specific_force, without.translation.specific_force, 0.0f);
+	expect_near(with.force_derivatives.first, without.force_derivatives.first, 0.0f);
+	expect_near(with.force_derivatives.second, without.force_derivatives.second, 0.0f);
+	expect_near(with.desired_attitude.angular_velocity, without.desired_attitude.angular_velocity, 0.0f);
+	expect_near(with.desired_attitude.angular_acceleration, without.desired_attitude.angular_acceleration, 0.0f);
+	EXPECT_FLOAT_EQ(with.collective_acceleration, without.collective_acceleration);
+
+	// The PHYSICAL law with K_I = 0 is the pure Lee moment for any e_I.
+	PhysicalAttitudeGains gains = physical_gains();
+	gains.integral.setZero();
+	PhysicalMomentOutput lee{};
+	PhysicalMomentOutput zero_gain{};
+	ASSERT_TRUE(AttitudeLaws::physical(state, with.desired_attitude, test_inertia(), gains, Vector3{}, lee));
+	ASSERT_TRUE(AttitudeLaws::physical(state, with.desired_attitude, test_inertia(), gains,
+					   Vector3{0.3f, -0.2f, 0.1f}, zero_gain));
+	expect_near(zero_gain.moment, lee.moment, 0.0f);
+	expect_near(zero_gain.integral_feedback, Vector3{}, 0.0f);
 }

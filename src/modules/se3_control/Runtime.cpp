@@ -189,8 +189,14 @@ public:
         PX4_INFO("enabled=%d active=%d faulted=%d", (int)(_param_enable.get() == 1),
                  (int)_active.load(), (int)_faulted);
         const int plan = _plan_id.load();
-        PX4_INFO("trajectory: %s, %s", plan >= 0 ? trajectory_generator::trajectory_name(plan) : "measured-pose hold",
-                 _executing.load() ? "running" : (_completed.load() ? "completed (holding home)" : "holding"));
+
+        if (_active.load()) {
+            PX4_INFO("trajectory: %s, %s", plan >= 0 ? trajectory_generator::trajectory_name(plan) : "measured-pose hold",
+                     _executing.load() ? "running" : (_completed.load() ? "completed (holding home)" : "holding"));
+
+        } else {
+            PX4_INFO("trajectory: none (SE3 not active)");
+        }
         static constexpr const char *responses[] = {
             "none", "Position requested", "Position accepted", "PX4 failsafe"
         };
@@ -199,7 +205,8 @@ public:
                  (double)(-_param_kixy.get() * _integral.value(0)), (double)(-_param_kixy.get() * _integral.value(1)),
                  (double)(-_param_kiz.get() * _integral.value(2)));
 
-        PX4_INFO("control: %s (SE3_CTRL %d)%s", se3_control::control_path_name(_path), (int)_param_ctrl.get(),
+        // _path is fixed at boot; a changed SE3_CTRL applies after reboot.
+        PX4_INFO("control: %s%s", se3_control::control_path_name(_path),
                  _native_rate_fallback ? ", fault fallback to PX4 rate control" : "");
 
         if (_physical) {
@@ -598,7 +605,7 @@ private:
     {
         const float elapsed_s = static_cast<float>(now - _plan_start) * 1.0e-6f;
 
-        if (!trajectory_generator::sample(_plan.sequence, elapsed_s, reference)) {
+        if (!trajectory_generator::sample(_plan.sequence, elapsed_s, _plan.origin, reference)) {
             return false;
         }
 
@@ -611,10 +618,11 @@ private:
         return true;
     }
 
-    // Apply the latest shell command at time now. A new trajectory starts
-    // from the reference the current plan has at this instant, so
-    // continuous entries have no reference discontinuity. False only if the
-    // hold could not be captured.
+    // Apply the latest shell command at time now, replacing the current plan
+    // directly. circle and figure8 start from the position and yaw the current
+    // plan has at this instant (at rest, so a moving reference changes
+    // velocity discontinuously); setpoint and steps5 step immediately. False
+    // only if the hold could not be captured.
     bool apply_request(hrt_abstime now)
     {
         pthread_mutex_lock(&_request_mutex);
