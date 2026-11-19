@@ -17,25 +17,41 @@ param set-default SIM_GZ_EN 1
 param set-default CA_AIRFRAME 0
 param set-default CA_ROTOR_COUNT 4
 
+# Rotor geometry and coefficients of the Gazebo f450 model (model.sdf, FRD):
+# hubs at +-0.16263456 m, 0.0112 m above the centre of mass, thrust axes
+# (0, 0, -1) (the CA_ROTOR*_AX/AY/AZ defaults). CT is the thrust at full
+# command, k_f (150 + 850)^2 = 12 N; KM is the momentConstant (positive for
+# the counter-clockwise rotors 0 and 1). With CT in newtons this effectiveness
+# is the SI rotor model used by SE3_CTRL = PHYSICAL; native allocation
+# normalizes it. THR_MDL_FAC keeps its default of 0.
+
 # Rotor 0: Front Right
-param set-default CA_ROTOR0_PX 0.159
-param set-default CA_ROTOR0_PY 0.159
-param set-default CA_ROTOR0_KM  0.014
+param set-default CA_ROTOR0_PX 0.16263456
+param set-default CA_ROTOR0_PY 0.16263456
+param set-default CA_ROTOR0_PZ -0.0112
+param set-default CA_ROTOR0_CT 12
+param set-default CA_ROTOR0_KM 0.0137
 
 # Rotor 1: Back Left
-param set-default CA_ROTOR1_PX -0.159
-param set-default CA_ROTOR1_PY -0.159
-param set-default CA_ROTOR1_KM  0.014
+param set-default CA_ROTOR1_PX -0.16263456
+param set-default CA_ROTOR1_PY -0.16263456
+param set-default CA_ROTOR1_PZ -0.0112
+param set-default CA_ROTOR1_CT 12
+param set-default CA_ROTOR1_KM 0.0137
 
 # Rotor 2: Front Left
-param set-default CA_ROTOR2_PX 0.159
-param set-default CA_ROTOR2_PY -0.159
-param set-default CA_ROTOR2_KM -0.014
+param set-default CA_ROTOR2_PX 0.16263456
+param set-default CA_ROTOR2_PY -0.16263456
+param set-default CA_ROTOR2_PZ -0.0112
+param set-default CA_ROTOR2_CT 12
+param set-default CA_ROTOR2_KM -0.0137
 
 # Rotor 3: Back Right
-param set-default CA_ROTOR3_PX -0.159
-param set-default CA_ROTOR3_PY 0.159
-param set-default CA_ROTOR3_KM -0.014
+param set-default CA_ROTOR3_PX -0.16263456
+param set-default CA_ROTOR3_PY 0.16263456
+param set-default CA_ROTOR3_PZ -0.0112
+param set-default CA_ROTOR3_CT 12
+param set-default CA_ROTOR3_KM -0.0137
 
 param set-default SIM_GZ_EC_FUNC1 101
 param set-default SIM_GZ_EC_FUNC2 102

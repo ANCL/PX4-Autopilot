@@ -784,8 +784,8 @@ ControlAllocator::publish_actuator_controls()
 bool
 ControlAllocator::se3_motors_compatible() const
 {
-	// One effectiveness matrix holding exactly the model's motors, all
-	// non-reversible with the [0, 1] command range of the thrust curves.
+	// One effectiveness matrix holding exactly four non-reversible motors
+	// with the [0, 1] thrust-linear command range.
 	if (_num_control_allocation != 1
 	    || _num_actuators[(int)ActuatorType::MOTORS] != se3_physical::kRotorCount
 	    || _num_actuators[(int)ActuatorType::SERVOS] != 0) {
@@ -811,31 +811,41 @@ ControlAllocator::allocate_se3_physical(float dt)
 	check_for_motor_failures();
 	update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
 
-	// The setpoint names its model, so controller and allocator always use
-	// the same vehicle description. Configure once per model id.
-	if (_se3_model != _se3_wrench.model) {
-		se3_physical::Model model{};
-		const bool known = se3_physical::get_model(_se3_wrench.model, model) && _se3_allocation.configure(model);
-		_se3_model = known ? _se3_wrench.model : -1;
-	}
-
 	se3_allocation_status_s status{};
 	status.timestamp_sample = _se3_wrench.timestamp_sample;
-	status.model = _se3_wrench.model;
 	status.thrust_requested = _se3_wrench.thrust;
 
 	for (int axis = 0; axis < 3; ++axis) {
 		status.moment_requested[axis] = _se3_wrench.moment[axis];
 	}
 
+	// The physical allocation uses the native rotor effectiveness (CA_ROTOR*),
+	// which is SI with CT in newtons. Reconfigure after every effectiveness
+	// update; a failed motor's zeroed column leaves it unconfigured.
+	const bool compatible = se3_motors_compatible();
+
+	if (compatible && _se3_effectiveness_update != _last_effectiveness_update) {
+		const ControlAllocation &native = *_control_allocation[0];
+		float minimum[se3_physical::kRotorCount];
+		float maximum[se3_physical::kRotorCount];
+
+		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
+			minimum[i] = native.getActuatorMin()(i);
+			maximum[i] = native.getActuatorMax()(i);
+		}
+
+		_se3_allocation.configure(native.getEffectivenessMatrix().slice<6, se3_physical::kRotorCount>(0, 0),
+					  minimum, maximum);
+		_se3_effectiveness_update = _last_effectiveness_update;
+	}
+
 	const se3_physical::Wrench request{_se3_wrench.thrust, matrix::Vector3f{_se3_wrench.moment}};
 	se3_physical::AllocationResult result{};
 
-	// An unknown model or incompatible outputs allocate nothing and nothing
-	// is published for this wrench; SE3 sees compatible = false and hands
-	// torque production back to the PX4 rate controller.
-	status.compatible = _se3_model == _se3_wrench.model && se3_motors_compatible()
-			    && _se3_allocation.allocate(request, result);
+	// Incompatible outputs or a rejected wrench allocate nothing and nothing is
+	// published for this wrench; SE3 sees compatible = false and hands torque
+	// production back to the PX4 rate controller.
+	status.compatible = compatible && _se3_allocation.allocate(request, result);
 
 	if (status.compatible) {
 		ControlAllocation &allocation = *_control_allocation[0];
@@ -858,24 +868,14 @@ ControlAllocator::allocate_se3_physical(float dt)
 		// limiting, with stopped or failed motors producing no thrust.
 		const uint32_t stopped = _actuator_effectiveness->getStoppedMotors() | _handled_motor_failure_bitmask;
 		float command[se3_physical::kRotorCount];
-		float thrust[se3_physical::kRotorCount];
 
 		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
-			command[i] = allocation._actuator_sp(i);
+			command[i] = (stopped & (1u << i)) ? 0.f : allocation._actuator_sp(i);
+			status.rotor_thrust[i] = _se3_allocation.rotor_thrust(i, command[i]);
+			status.motor_command[i] = allocation._actuator_sp(i);
 		}
 
-		_se3_allocation.thrust_from_commands(command, thrust);
-
-		for (int i = 0; i < se3_physical::kRotorCount; ++i) {
-			if (stopped & (1u << i)) {
-				thrust[i] = 0.f;
-			}
-
-			status.rotor_thrust[i] = thrust[i];
-			status.motor_command[i] = command[i];
-		}
-
-		const se3_physical::Wrench achieved = _se3_allocation.wrench(thrust);
+		const se3_physical::Wrench achieved = _se3_allocation.wrench(command);
 		status.valid = (stopped & ((1u << se3_physical::kRotorCount) - 1u)) == 0;
 		status.thrust_achieved = achieved.thrust;
 

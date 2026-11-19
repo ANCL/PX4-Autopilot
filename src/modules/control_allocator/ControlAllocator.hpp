@@ -145,7 +145,8 @@ private:
 	void publish_actuator_controls();
 
 #if defined(CONFIG_MODULES_SE3_CONTROL)
-	// Onboard SE3 PHYSICAL: allocate an SI wrench in rotor-thrust space, then
+	// Onboard SE3 PHYSICAL: allocate an SI wrench with the native rotor
+	// effectiveness (CA_ROTOR*) in motor-command space, then
 	// reuse the native slew-rate limit, clipping, motor stop/failure handling
 	// and actuator_motors publication.
 	void allocate_se3_physical(float dt);
@@ -212,7 +213,7 @@ private:
 	uORB::Publication<se3_allocation_status_s> _se3_allocation_status_pub{ORB_ID(se3_allocation_status)};
 	se3_wrench_setpoint_s _se3_wrench{};
 	se3_physical::Allocation _se3_allocation{};
-	int _se3_model{-1};             ///< model id configured in _se3_allocation, -1 if none
+	hrt_abstime _se3_effectiveness_update{0}; ///< effectiveness update _se3_allocation was configured from
 	hrt_abstime _se3_last_sample{0};
 	hrt_abstime _se3_command_wrench_time{0}; ///< wrench timestamp of the physical command in _actuator_sp
 	bool _se3_command_stored{false}; ///< _actuator_sp holds a physical command, not a native allocation

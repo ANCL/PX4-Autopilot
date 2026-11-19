@@ -1,8 +1,11 @@
 # SE(3) reference and execution status at the controller update time.
 # Logged onboard; it is not part of the uXRCE-DDS topic configuration.
 uint64 timestamp                  # PX4 boot time [us]
-uint32 run_id                     # Increments on each accepted run command
-uint32 plan_crc32                 # CRC32 of the effective trajectory definition
+uint32 run_id                     # Increments on each accepted trajectory command
+uint32 plan_crc32                 # CRC32 of the effective plan (0 for setpoint and hold)
+int8 TRAJECTORY_HOLD = -1         # Measured-pose hold (mode entry or hold command)
+int8 trajectory                   # Active plan: TRAJECTORY_HOLD, or 0 setpoint, 1 steps5, 2 circle, 3 figure8
+uint8 segment                     # Active plan segment (number of segments once completed)
 uint8 PHASE_HOLD = 1
 uint8 PHASE_RUNNING = 2
 uint8 PHASE_COMPLETED = 3
@@ -16,3 +19,5 @@ float32[3] snap                  # Desired snap [m/s^4]
 float32 yaw                      # Desired heading [rad]
 float32 yaw_rate                 # Desired heading rate [rad/s]
 float32 yaw_acceleration         # Desired heading acceleration [rad/s^2]
+float32[3] integral_acceleration # Position-integral part -K_i I of the acceleration command [m/s^2]
+bool integral_frozen             # Position integral frozen this cycle (output saturation)

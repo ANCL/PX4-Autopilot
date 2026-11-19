@@ -24,15 +24,31 @@ struct State
 
 struct TranslationGains
 {
-  // Mass-normalized translational gains: kx/m [1/s^2], kv/m [1/s].
+  // Mass-normalized translational gains: kx/m [1/s^2], kv/m [1/s] and the
+  // per-axis integral gain ki/m [1/s^3] (x, y share SE3_KIXY; z is SE3_KIZ).
   float position{0.0f};
   float velocity{0.0f};
+  Vector3 integral{};
+};
+
+// Bounded integral of the position error, I = int sat(e_x) dt [m s], with the
+// time derivatives it had in its latest update. Derivatives are zero on axes
+// that were frozen, held at the bound or not integrated, so the analytic
+// desired-force derivatives match the integral actually applied.
+struct PositionIntegral
+{
+  Vector3 value{};
+  Vector3 rate{};             // dI/dt [m].
+  Vector3 rate_derivative{};  // d^2I/dt^2 [m/s].
 };
 
 struct TranslationOutput
 {
   // Kinematic acceleration command in local NED [m/s^2].
   Vector3 acceleration{};
+
+  // Integral part -K_i I of the acceleration command [m/s^2].
+  Vector3 integral{};
 
   // Specific force A/m in NED [m/s^2], including gravity compensation.
   // Not a normalized PX4 thrust setpoint.
@@ -68,18 +84,21 @@ struct NormalizedTorqueOutput
 };
 
 // Physical geometric attitude gains (SE3_CTRL = PHYSICAL), per body axis:
-// K_R [N m/rad] and K_Omega [N m s/rad].
+// K_R [N m/rad], K_Omega [N m s/rad] and K_I [N m/(rad s)].
 struct PhysicalAttitudeGains
 {
   Vector3 attitude{};
   Vector3 angular_velocity{};
+  Vector3 integral{};
 };
 
 // Terms of the physical Lee moment [N m] in the current body FRD frame.
 struct PhysicalMomentOutput
 {
+  Vector3 attitude_error{};             // e_R, input of the attitude integral
   Vector3 attitude_feedback{};          // -K_R e_R
   Vector3 angular_velocity_feedback{};  // -K_Omega e_Omega
+  Vector3 integral_feedback{};          // -K_I e_I
   Vector3 gyroscopic{};                 // Omega x J Omega
   Vector3 inertial_feedforward{};       // J alpha_ff
   Vector3 moment{};

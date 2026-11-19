@@ -14,6 +14,9 @@
 //                allocated in rotor-thrust space by control_allocator, with
 //                the PX4 rate loop disabled.
 //
+// The 100 Hz translation law, including its bounded position-error integral,
+// is common to all three paths.
+//
 // Setpoints are published only while this registered flight mode is active
 // with the controllers its path requires. Fault handling (Position-mode
 // request or native PX4 failsafe) is described at enter_fault().
@@ -41,6 +44,7 @@
 #include <uORB/SubscriptionInterval.hpp>
 #include <uORB/topics/arming_check_reply.h>
 #include <uORB/topics/arming_check_request.h>
+#include <uORB/topics/control_allocator_status.h>
 #include <uORB/topics/parameter_update.h>
 #include <uORB/topics/register_ext_component_reply.h>
 #include <uORB/topics/register_ext_component_request.h>
@@ -75,6 +79,12 @@ constexpr hrt_abstime kGyroTimeout = 100_ms;
 
 // Commander normally acknowledges a mode request within one 10 ms loop.
 constexpr hrt_abstime kHandoffAckTimeout = 100_ms;
+
+// Longest outer-loop interval integrated; a longer gap integrates nothing.
+constexpr hrt_abstime kIntegralMaxInterval = 50_ms;
+
+// Native allocation status older than this is not used for anti-windup.
+constexpr hrt_abstime kAllocatorStatusTimeout = 100_ms;
 
 using se3_control::ControlPath;
 
@@ -178,12 +188,16 @@ public:
         PX4_INFO("Commander mode id=%d arming check id=%d", (int)_mode_id, (int)_arming_check_id);
         PX4_INFO("enabled=%d active=%d faulted=%d", (int)(_param_enable.get() == 1),
                  (int)_active.load(), (int)_faulted);
-        PX4_INFO("trajectory: %s", _executing.load() ? "running" :
-                 (_completed.load() ? "completed (holding final pose)" : "holding"));
+        const int plan = _plan_id.load();
+        PX4_INFO("trajectory: %s, %s", plan >= 0 ? trajectory_generator::trajectory_name(plan) : "measured-pose hold",
+                 _executing.load() ? "running" : (_completed.load() ? "completed (holding home)" : "holding"));
         static constexpr const char *responses[] = {
             "none", "Position requested", "Position accepted", "PX4 failsafe"
         };
         PX4_INFO("fault response: %s", responses[static_cast<int>(_fault_response)]);
+        PX4_INFO("position integral -K_i I: [%.3f, %.3f, %.3f] m/s^2",
+                 (double)(-_param_kixy.get() * _integral.value(0)), (double)(-_param_kixy.get() * _integral.value(1)),
+                 (double)(-_param_kiz.get() * _integral.value(2)));
 
         PX4_INFO("control: %s (SE3_CTRL %d)%s", se3_control::control_path_name(_path), (int)_param_ctrl.get(),
                  _native_rate_fallback ? ", fault fallback to PX4 rate control" : "");
@@ -262,16 +276,20 @@ Registered at boot on supported targets. Selection requires valid airborne state
 SE3_CTRL (fixed until reboot) selects the path: 0 ATTITUDE_PX4 (PX4 attitude and rate controllers),
 1 RATE_PX4 (PX4 rate controller, default) or 2 PHYSICAL (physical wrench, SE3 allocation).
 PX4 retains allocator, actuator output and flight-safety ownership.
+
+Selecting SE3 holds the measured pose. While SE3 is active, `trajectory` starts a
+trajectory immediately, preempting any running one, and `hold` holds the measured pose.
 )DESCR_STR");
         PRINT_MODULE_USAGE_NAME("se3_control", "controller");
         PRINT_MODULE_USAGE_COMMAND("start");
-        PRINT_MODULE_USAGE_COMMAND("select");
-        PRINT_MODULE_USAGE_COMMAND("hold");
-        PRINT_MODULE_USAGE_COMMAND("list");
-        PRINT_MODULE_USAGE_COMMAND("trajectory");
+        PRINT_MODULE_USAGE_COMMAND_DESCR("select", "Request the SE3 flight mode (holds the measured pose)");
+        PRINT_MODULE_USAGE_COMMAND_DESCR("hold", "Cancel the trajectory and hold the measured pose");
+        PRINT_MODULE_USAGE_COMMAND_DESCR("list", "List the trajectories");
+        PRINT_MODULE_USAGE_COMMAND_DESCR("trajectory", "Start a trajectory now, preempting the current one");
+        PRINT_MODULE_USAGE_ARG("setpoint|steps5|circle|figure8", "Trajectory", false);
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
         PRINT_MODULE_USAGE_COMMAND_DESCR("fault", "SITL test only: inject a fault (requires SYS_FAILURE_EN=1)");
-        PRINT_MODULE_USAGE_ARG("controller|state|allocation", "Fault class (allocation: PHYSICAL wrench with an unknown model)", false);
+        PRINT_MODULE_USAGE_ARG("controller|state|allocation", "Fault class (allocation: non-finite PHYSICAL wrench)", false);
 #endif
         PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
         return 0;
@@ -312,8 +330,8 @@ private:
             return PX4_ERROR;
         }
 
-        _hold_requested.store(true);
-        PX4_INFO("SE3 current-position hold requested");
+        submit_request(trajectory_generator::kHoldId, trajectory_generator::Settings{});
+        PX4_INFO("SE3 current-pose hold requested");
         return PX4_OK;
     }
 
@@ -341,9 +359,9 @@ private:
             _injected_fault.store(static_cast<int32_t>(FaultClass::State));
 
         } else if (std::strcmp(kind, "allocation") == 0 && _physical) {
-            // Real allocator rejection path: wrenches name an unknown model
-            // until the resulting fault is detected.
-            _inject_unknown_model.store(true);
+            // Real allocator rejection path: non-finite wrenches until the
+            // resulting fault is detected.
+            _inject_invalid_wrench.store(true);
 
         } else {
             PX4_ERR("fault class must be controller, state or (PHYSICAL) allocation");
@@ -386,12 +404,13 @@ private:
     // is restored on disarm.
     void enter_fault(FaultClass fault, const char *reason)
     {
-        clear_trajectory_request();
+        clear_request();
         _active.store(false);
         _executing.store(false);
+        reset_integral();
         _faulted = true;
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
-        _inject_unknown_model.store(false);
+        _inject_invalid_wrench.store(false);
 #endif
 
         if (_physical) {
@@ -512,8 +531,9 @@ private:
         _native_rate_fallback = native_rate_fallback;
     }
 
-    // The shell supplies a named trajectory and a parameter snapshot.
-    // Only the SE3 work queue changes the active reference.
+    // The shell supplies a named trajectory and a parameter snapshot. Any
+    // command replaces a pending one; only the SE3 work queue changes the
+    // active plan, so a command always preempts the running trajectory.
     int command_trajectory(const char *name)
     {
         const int index = trajectory_generator::trajectory_index(name);
@@ -523,65 +543,144 @@ private:
             return PX4_ERROR;
         }
 
-        if (!_active.load() || _executing.load() || _hold_requested.load()) {
-            PX4_ERR("SE3 must be active and holding");
+        if (!_active.load()) {
+            PX4_ERR("SE3 is not the active flight mode");
             return PX4_ERROR;
         }
 
         trajectory_generator::Settings settings{};
-        if (!trajectory_generator::load_settings(settings)) {
+
+        if (!trajectory_generator::load_settings(settings) ||
+            !trajectory_generator::valid_settings(index, settings)) {
             PX4_ERR("invalid trajectory parameters");
             return PX4_ERROR;
         }
 
-        pthread_mutex_lock(&_trajectory_mutex);
-        const bool accepted = _requested_trajectory < 0 && _active.load() &&
-                              !_executing.load() && !_hold_requested.load();
-
-        if (accepted) {
-            _requested_settings = settings;
-            _requested_trajectory = index;
-        }
-
-        pthread_mutex_unlock(&_trajectory_mutex);
-
-        if (!accepted) {
-            PX4_ERR("SE3 is busy");
-            return PX4_ERROR;
-        }
-
+        submit_request(index, settings);
         PX4_INFO("trajectory requested: %s", name);
         return PX4_OK;
     }
 
-    void clear_trajectory_request()
+    void submit_request(int trajectory, const trajectory_generator::Settings &settings)
     {
-        pthread_mutex_lock(&_trajectory_mutex);
-        _requested_trajectory = -1;
-        pthread_mutex_unlock(&_trajectory_mutex);
+        pthread_mutex_lock(&_request_mutex);
+        _request.pending = true;
+        _request.trajectory = trajectory;
+        _request.settings = settings;
+        pthread_mutex_unlock(&_request_mutex);
     }
 
-    void capture_hold()
+    void clear_request()
     {
-        // Initialize a stationary reference at the measured local pose.
-        _origin = {};
-        _origin.position = {_position.x, _position.y, _position.z};
-        _origin.yaw = _position.heading;
-        _sequence = trajectory_generator::Sequence{};
-        _sequence.count = 1;
-        _sequence.segments[0].type = trajectory_generator::Segment::Type::Hold;
-        _sequence.segments[0].duration_s = 86400.0f;
-        _start_time = hrt_absolute_time();
+        pthread_mutex_lock(&_request_mutex);
+        _request.pending = false;
+        pthread_mutex_unlock(&_request_mutex);
+    }
+
+    // Stationary reference at the measured local pose (mode entry, `hold`).
+    // Fails only for a non-finite estimate, which state_valid() excludes.
+    bool capture_hold(hrt_abstime now)
+    {
+        if (!trajectory_generator::build_hold({{_position.x, _position.y, _position.z}}, _position.heading, _plan)) {
+            return false;
+        }
+
+        _plan_start = now;
+        _plan_id.store(_plan.id);
         _executing.store(false);
         _completed.store(false);
-        _active_plan_crc = 0;
-        _active_trajectory_index = -1;
+        return true;
+    }
+
+    // Reference of the active plan at time now; the live setpoint follows
+    // TRJ_SP_* edits as immediate steps.
+    bool current_reference(hrt_abstime now, trajectory_generator::Reference &reference) const
+    {
+        const float elapsed_s = static_cast<float>(now - _plan_start) * 1.0e-6f;
+
+        if (!trajectory_generator::sample(_plan.sequence, elapsed_s, reference)) {
+            return false;
+        }
+
+        if (_plan.id == static_cast<int>(trajectory_generator::TrajectoryId::Setpoint)) {
+            reference = {};
+            reference.position = {{_param_sp_x.get(), _param_sp_y.get(), _param_sp_z.get()}};
+            reference.yaw = _param_sp_yaw.get();
+        }
+
+        return true;
+    }
+
+    // Apply the latest shell command at time now. A new trajectory starts
+    // from the reference the current plan has at this instant, so
+    // continuous entries have no reference discontinuity. False only if the
+    // hold could not be captured.
+    bool apply_request(hrt_abstime now)
+    {
+        pthread_mutex_lock(&_request_mutex);
+        const Request request = _request;
+        _request.pending = false;
+        pthread_mutex_unlock(&_request_mutex);
+
+        if (!request.pending) {
+            return true;
+        }
+
+        if (request.trajectory == trajectory_generator::kHoldId) {
+            return capture_hold(now);
+        }
+
+        trajectory_generator::Reference start{};
+
+        if (!current_reference(now, start) ||
+            !trajectory_generator::build_trajectory(request.trajectory, request.settings, start, _next_plan)) {
+            PX4_ERR("trajectory %s could not be built; keeping the current reference",
+                    trajectory_generator::trajectory_name(request.trajectory));
+            return true;
+        }
+
+        _plan = _next_plan;
+        _plan_start = now;
+        _plan_id.store(_plan.id);
+        // The live setpoint has no fixed plan, so no checksum identifies it.
+        _plan_crc = _plan.id == static_cast<int>(trajectory_generator::TrajectoryId::Setpoint) ? 0 : _plan.checksum;
+        ++_run_id;
+        _executing.store(true);
+        _completed.store(false);
+        PX4_INFO("SE3 trajectory %s started (run %u, %.1f s)", trajectory_generator::trajectory_name(_plan.id),
+                 static_cast<unsigned>(_run_id), static_cast<double>(_plan.duration_s));
+        return true;
+    }
+
+    void reset_integral()
+    {
+        _integral = {};
+        _integral_time = 0;
+        _command_saturated = false;
+    }
+
+    // Anti-windup input for the translational integral: the previous normalized
+    // command was clamped, or the allocator could not produce the collective or
+    // roll/pitch command (native control_allocator_status, or the PHYSICAL
+    // se3_allocation_status replies).
+    bool output_saturated(hrt_abstime now)
+    {
+        if (_physical) {
+            return _physical_path.force_saturated();
+        }
+
+        _allocator_status_sub.update(&_allocator_status);
+        const bool roll_pitch_achieved = _allocator_status.unallocated_torque[0] * _allocator_status.unallocated_torque[0] +
+                                         _allocator_status.unallocated_torque[1] * _allocator_status.unallocated_torque[1] < 1e-6f;
+        const bool allocator_saturated = fresh(now, _allocator_status.timestamp, kAllocatorStatusTimeout) &&
+                                         (!_allocator_status.thrust_setpoint_achieved || !roll_pitch_achieved);
+        return _command_saturated || allocator_saturated;
     }
 
     void Run() override
     {
         if (should_exit()) {
-            clear_trajectory_request();
+            clear_request();
             ScheduleClear();
 
             if (_physical) {
@@ -599,7 +698,7 @@ private:
             updateParams();
 
             if (_physical) {
-                _physical_path.update_parameters();
+                update_vehicle();
             }
         }
 
@@ -660,11 +759,11 @@ private:
                               se3_control::controllers_match(_path, _faulted, controllers);
 
         if (!selected) {
-            clear_trajectory_request();
+            clear_request();
             _active.store(false);
             _executing.store(false);
             _completed.store(false);
-            _hold_requested.store(false);
+            reset_integral();
 
             if (_physical) {
                 _physical_path.clear_reference();
@@ -711,9 +810,16 @@ private:
 
         if (!_active.load()) {
             // Mode entry is deliberately passive: capture the actual pose
-            // and hold it until an explicit trajectory start arrives.
-            capture_hold();
-            _hold_requested.store(false);
+            // and hold it until an explicit trajectory command arrives.
+            // Commands issued before activation are discarded.
+            clear_request();
+            reset_integral();
+
+            if (!capture_hold(hrt_absolute_time())) {
+                enter_fault(FaultClass::State, "measured pose not valid for hold");
+                return;
+            }
+
             _xy_reset_counter = _position.xy_reset_counter;
             _z_reset_counter = _position.z_reset_counter;
             _quat_reset_counter = _attitude.quat_reset_counter;
@@ -743,68 +849,28 @@ private:
             return;
         }
 
-        bool hold_requested = true;
-        if (_hold_requested.compare_exchange(&hold_requested, false)) {
-            clear_trajectory_request();
-            capture_hold();
+        const hrt_abstime now = hrt_absolute_time();
+
+        if (!apply_request(now)) {
+            enter_fault(FaultClass::State, "measured pose not valid for hold");
+            return;
         }
 
-        int requested_index = -1;
-        trajectory_generator::Settings settings{};
-        pthread_mutex_lock(&_trajectory_mutex);
-
-        if (_requested_trajectory >= 0 && !_executing.load()) {
-            requested_index = _requested_trajectory;
-            settings = _requested_settings;
-            _requested_trajectory = -1;
-        }
-
-        pthread_mutex_unlock(&_trajectory_mutex);
-
-        if (requested_index >= 0) {
-            // The selected reference is absolute NED; no pose alignment occurs.
-            auto &trajectory = _next_trajectory;
-            if (!trajectory_generator::build_trajectory(requested_index, settings, trajectory)) {
-                PX4_ERR("invalid trajectory definition");
-            } else {
-                _origin = trajectory.origin;
-                _sequence = trajectory.sequence;
-                _duration_s = trajectory.duration_s;
-                // Live setpoint has no fixed-plan checksum because it can change in flight.
-                _active_plan_crc = requested_index == static_cast<int>(trajectory_generator::TrajectoryId::Setpoint)
-                    ? 0 : trajectory.checksum;
-                _active_trajectory_index = requested_index;
-                ++_run_id;
-                _start_time = hrt_absolute_time();
-                _executing.store(true);
-                _completed.store(false);
-                PX4_INFO("SE3 trajectory started (%u segments)",
-                         static_cast<unsigned>(_sequence.count));
-            }
-        }
-
-        const float elapsed_s =
-            static_cast<float>(hrt_absolute_time() - _start_time) * 1.0e-6f;
+        const float elapsed_s = static_cast<float>(now - _plan_start) * 1.0e-6f;
         trajectory_generator::Reference reference{};
 
-        if (!trajectory_generator::sample(_sequence, elapsed_s, _origin, reference)) {
+        if (!current_reference(now, reference)) {
             enter_fault(FaultClass::Controller, "trajectory sampling failed");
             return;
         }
 
-        const bool live_setpoint = _active_trajectory_index ==
-            static_cast<int>(trajectory_generator::TrajectoryId::Setpoint);
-        // Live setpoint is the one reference that follows parameter edits.
-        // No interpolation: changes become instantaneous command steps.
-        if (live_setpoint) {
-            reference = {};
-            reference.position = {{_param_sp_x.get(), _param_sp_y.get(), _param_sp_z.get()}};
-            reference.yaw = _param_sp_yaw.get();
-        }
+        const bool live_setpoint = _plan.id == static_cast<int>(trajectory_generator::TrajectoryId::Setpoint);
 
-        if (_executing.load() && !live_setpoint && elapsed_s >= _duration_s) {
+        // Finite trajectories end at rest at home, which the sampler then holds.
+        if (_executing.load() && !live_setpoint && elapsed_s >= _plan.duration_s) {
             _executing.store(false);
-            _completed.store(true); // Sampler holds the exact final reference.
+            _completed.store(true);
+            PX4_INFO("SE3 trajectory %s completed; holding home", trajectory_generator::trajectory_name(_plan.id));
         }
 
         se3_control::State state{};
@@ -815,10 +881,20 @@ private:
         const matrix::Quatf quat{_attitude.q};
         state.attitude = matrix::Dcmf{quat};
 
-        // Use the same mass-normalized translation law as ROS Offboard.
-        se3_control::TranslationGains translation_gains{};
-        translation_gains.position = _param_kx.get();
-        translation_gains.velocity = _param_kv.get();
+        // Mass-normalized translation law shared by all paths, with the
+        // bounded position-error integral updated before it is applied.
+        const se3_control::TranslationGains translation_gains = translation_gains_from_parameters();
+        const bool integral_frozen = output_saturated(now);
+        const float integral_dt = _integral_time > 0 && now > _integral_time &&
+                                  now - _integral_time <= kIntegralMaxInterval ?
+                                  static_cast<float>(now - _integral_time) * 1.0e-6f : 0.0f;
+        _integral_time = now;
+
+        if (!se3_control::Controller::update_integral(state, reference, translation_gains, integral_dt,
+                integral_frozen, _integral)) {
+            enter_fault(FaultClass::Controller, "position integral update failed");
+            return;
+        }
 
         se3_control::GeometricOutput geometric{};
         se3_control::Vector3 body_rate{};
@@ -830,7 +906,7 @@ private:
         // the other paths command the geometric attitude (body rate stays 0).
         const bool rate_path = _path == ControlPath::RatePx4;
 
-        if (!se3_control::Controller::compute_geometry(state, reference, translation_gains, geometric) ||
+        if (!se3_control::Controller::compute_geometry(state, reference, translation_gains, _integral, geometric) ||
             (rate_path &&
              !se3_control::AttitudeLaws::body_rate(state, geometric.desired_attitude, attitude_gains, body_rate))) {
             enter_fault(FaultClass::Controller, "geometric control computation failed");
@@ -854,6 +930,13 @@ private:
         setpoint.thrust_body[0] = 0.f;
         setpoint.thrust_body[1] = 0.f;
         setpoint.thrust_body[2] = -fminf(fmaxf(thrust, 0.0f), 1.0f);
+
+        // Clamped normalized commands freeze the integral next cycle. Only
+        // the PX4 paths command them; PHYSICAL uses the allocation replies.
+        _command_saturated = !_physical &&
+                             (thrust > 1.0f || thrust < 0.0f ||
+                              (rate_path && (fabsf(body_rate(0)) > rate_limit || fabsf(body_rate(1)) > rate_limit ||
+                                             fabsf(body_rate(2)) > rate_limit)));
 
         if (_physical) {
             // The inner loop uses this reference until the next update. The
@@ -893,11 +976,17 @@ private:
         se3_trajectory_status_s record{};
         record.timestamp = setpoint.timestamp;
         record.run_id = _run_id;
-        record.plan_crc32 = _active_plan_crc;
+        record.plan_crc32 = _plan.id == trajectory_generator::kHoldId ? 0 : _plan_crc;
+        record.trajectory = static_cast<int8_t>(_plan.id);
+        // Stationary plans (hold, setpoint) stay in their only segment.
+        const std::size_t segment = trajectory_generator::segment_index(_plan.sequence, elapsed_s);
+        record.segment = static_cast<uint8_t>(_completed.load() ? _plan.sequence.count :
+                                              (segment < _plan.sequence.count ? segment : _plan.sequence.count - 1));
         record.phase = _completed.load() ? se3_trajectory_status_s::PHASE_COMPLETED :
                        (_executing.load() ? se3_trajectory_status_s::PHASE_RUNNING :
                                             se3_trajectory_status_s::PHASE_HOLD);
-        record.elapsed_s = _active_trajectory_index >= 0 ? fminf(elapsed_s, _duration_s) : 0.0f;
+        record.elapsed_s = _plan.id == trajectory_generator::kHoldId ? 0.0f :
+                           (live_setpoint ? elapsed_s : fminf(elapsed_s, _plan.duration_s));
         for (int axis = 0; axis < 3; ++axis) {
             record.position[axis] = reference.position[axis];
             record.velocity[axis] = reference.velocity[axis];
@@ -908,6 +997,12 @@ private:
         record.yaw = reference.yaw;
         record.yaw_rate = reference.yaw_rate;
         record.yaw_acceleration = reference.yaw_acceleration;
+
+        for (int axis = 0; axis < 3; ++axis) {
+            record.integral_acceleration[axis] = geometric.translation.integral(axis);
+        }
+
+        record.integral_frozen = integral_frozen;
         // Publish the same reference used for SE3 control on PX4's standard
         // trajectory topic. The FlightModeManager has no flight task in an
         // external mode; mc_pos_control remains disabled by Commander.
@@ -927,14 +1022,13 @@ private:
         _trajectory_status_pub.publish(record);
     }
 
-    // PHYSICAL setup at boot: model, its parameter dependencies and the
-    // gyro-triggered inner loop on Run()'s work queue (same thread, so the
-    // inner loop shares state with Run() without locking).
+    // PHYSICAL setup at boot: vehicle parameters and the gyro-triggered inner
+    // loop on Run()'s work queue (same thread, so the inner loop shares state
+    // with Run() without locking).
     bool init_physical()
     {
-        if (!_physical_path.init(_param_model.get())) {
-            return false;
-        }
+        _physical_path.init();
+        update_vehicle();
 
         _inner = new InnerLoop(*this);
         _inner_gyro_sub = _inner ? new uORB::SubscriptionCallbackWorkItem(_inner, ORB_ID(vehicle_angular_velocity)) : nullptr;
@@ -944,8 +1038,22 @@ private:
             return false;
         }
 
-        PX4_INFO("PHYSICAL control with model %s", _physical_path.model().name);
         return true;
+    }
+
+    void update_vehicle()
+    {
+        _physical_path.set_vehicle(_param_mass.get(),
+                                   se3_control::Vector3{_param_jxx.get(), _param_jyy.get(), _param_jzz.get()});
+    }
+
+    se3_control::TranslationGains translation_gains_from_parameters() const
+    {
+        se3_control::TranslationGains gains{};
+        gains.position = _param_kx.get();
+        gains.velocity = _param_kv.get();
+        gains.integral = se3_control::Vector3{_param_kixy.get(), _param_kixy.get(), _param_kiz.get()};
+        return gains;
     }
 
     se3_control::PhysicalAttitudeGains physical_gains() const
@@ -953,6 +1061,7 @@ private:
         se3_control::PhysicalAttitudeGains gains{};
         gains.attitude = se3_control::Vector3{_param_pkrx.get(), _param_pkry.get(), _param_pkrz.get()};
         gains.angular_velocity = se3_control::Vector3{_param_pkwx.get(), _param_pkwy.get(), _param_pkwz.get()};
+        gains.integral = se3_control::Vector3{_param_pki_xy.get(), _param_pki_xy.get(), _param_pki_z.get()};
         return gains;
     }
 
@@ -1006,12 +1115,14 @@ private:
         const se3_control::PhysicalAttitudeGains gains = physical_gains();
         float thrust = 0.0f;
         se3_control::Vector3 moment{};
+        se3_control::Vector3 moment_integral{};
         bool lee = false;
 
         if (_active.load() && !_faulted) {
             const char *reason = nullptr;
             const se3_control::PhysicalPath::Fault fault =
-                _physical_path.lee_wrench(state, _inner_attitude.timestamp, gains, thrust, moment, reason);
+                _physical_path.lee_wrench(state, _inner_attitude.timestamp, gyro.timestamp_sample, gains,
+                                          thrust, moment, moment_integral, reason);
 
             if (fault == se3_control::PhysicalPath::Fault::None) {
                 lee = true;
@@ -1027,9 +1138,10 @@ private:
         }
 
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
-        _physical_path.inject_unknown_model(_inject_unknown_model.load());
+        _physical_path.inject_invalid_wrench(_inject_invalid_wrench.load());
 #endif
-        _physical_path.publish(gyro, static_cast<uint8_t>(_mode_id), !lee, thrust, moment, _param_hover.get());
+        _physical_path.publish(gyro, static_cast<uint8_t>(_mode_id), !lee, thrust, moment, moment_integral,
+                               _param_hover.get());
     }
 
     // Readiness is the conjunction of the vehicle, estimate and configuration
@@ -1076,14 +1188,17 @@ private:
                fresh(now, _gyro.timestamp, kGyroTimeout);
     }
 
-    // Each path requires only the parameters it uses. RATE_PX4 keeps the
-    // original conjunction; ATTITUDE_PX4 uses PX4's MC_* attitude and rate
-    // gains, PHYSICAL its own gains and model, and neither depends on the SE3
-    // body-rate gains or rate limit.
+    // Each path requires only the parameters it uses. All share the
+    // translation gains; RATE_PX4 adds the SE3 body-rate gains and limit,
+    // ATTITUDE_PX4 uses PX4's MC_* attitude and rate gains, and PHYSICAL its
+    // own gains, mass and inertia.
     bool configured() const
     {
+        const bool integral = std::isfinite(_param_kixy.get()) && _param_kixy.get() >= 0.0f &&
+                              std::isfinite(_param_kiz.get()) && _param_kiz.get() >= 0.0f;
+
         if (_path == ControlPath::RatePx4) {
-            return _param_enable.get() == 1 &&
+            return _param_enable.get() == 1 && integral &&
                    _param_kx.get() > 0.0f && _param_kv.get() > 0.0f &&
                    _param_krx.get() > 0.0f && _param_kry.get() > 0.0f &&
                    _param_krz.get() > 0.0f &&
@@ -1095,7 +1210,7 @@ private:
                    std::isfinite(_param_rate_max.get()) && std::isfinite(_param_hover.get());
         }
 
-        const bool translation = _param_enable.get() == 1 &&
+        const bool translation = _param_enable.get() == 1 && integral &&
                                  _param_kx.get() > 0.0f && _param_kv.get() > 0.0f &&
                                  _param_hover.get() > 0.0f && _param_hover.get() < 1.0f &&
                                  std::isfinite(_param_kx.get()) && std::isfinite(_param_kv.get()) &&
@@ -1148,23 +1263,33 @@ private:
     vehicle_attitude_s _attitude{};
     vehicle_angular_velocity_s _gyro{};
 
-    trajectory_generator::Reference _origin{};
-    trajectory_generator::Sequence _sequence{};
-    trajectory_generator::Trajectory _next_trajectory{};
-    pthread_mutex_t _trajectory_mutex = PTHREAD_MUTEX_INITIALIZER;
-    trajectory_generator::Settings _requested_settings{};
-    int _requested_trajectory{-1};
-    int _active_trajectory_index{-1};
-    hrt_abstime _start_time{0};
+    // Active plan (work-queue thread only) and the latest shell command.
+    trajectory_generator::Trajectory _plan{};
+    trajectory_generator::Trajectory _next_plan{}; // Built here, so a failed build keeps _plan.
+    hrt_abstime _plan_start{0};
+    uint32_t _plan_crc{0};
+    struct Request {
+        bool pending{false};
+        int trajectory{trajectory_generator::kHoldId};
+        trajectory_generator::Settings settings{};
+    };
+    pthread_mutex_t _request_mutex = PTHREAD_MUTEX_INITIALIZER;
+    Request _request{};
+
+    // Translational integral (common to all paths) and its anti-windup inputs.
+    se3_control::PositionIntegral _integral{};
+    hrt_abstime _integral_time{0};
+    bool _command_saturated{false};
+    uORB::Subscription _allocator_status_sub{ORB_ID(control_allocator_status)};
+    control_allocator_status_s _allocator_status{};
+
     uint64_t _registration_request_id{0};
     int8_t _mode_id{-1};
     int8_t _arming_check_id{-1};
     uint8_t _xy_reset_counter{0};
     uint8_t _z_reset_counter{0};
     uint8_t _quat_reset_counter{0};
-    float _duration_s{0.0f};
     uint32_t _run_id{0};
-    uint32_t _active_plan_crc{0};
     px4::atomic_int32_t _registered_mode_id{-1};
     uORB::Publication<vehicle_command_s> _vehicle_command_pub{ORB_ID(vehicle_command)}; // CLI thread.
 
@@ -1197,18 +1322,21 @@ private:
     vehicle_attitude_s _inner_attitude{};
     hrt_abstime _inner_last_sample{0};
 #if defined(CONFIG_ARCH_BOARD_PX4_SITL)
-    px4::atomic_bool _inject_unknown_model{false};
+    px4::atomic_bool _inject_invalid_wrench{false};
 #endif
 
+    // Read by shell commands and status.
     px4::atomic_bool _active{false};
     px4::atomic_bool _executing{false};
     px4::atomic_bool _completed{false};
-    px4::atomic_bool _hold_requested{false};
+    px4::atomic_int32_t _plan_id{trajectory_generator::kHoldId};
 
     DEFINE_PARAMETERS(
         (ParamInt<px4::params::SE3_ENABLE>) _param_enable,
         (ParamFloat<px4::params::SE3_KX>) _param_kx,
         (ParamFloat<px4::params::SE3_KV>) _param_kv,
+        (ParamFloat<px4::params::SE3_KIXY>) _param_kixy,
+        (ParamFloat<px4::params::SE3_KIZ>) _param_kiz,
         (ParamFloat<px4::params::SE3_KRX>) _param_krx,
         (ParamFloat<px4::params::SE3_KRY>) _param_kry,
         (ParamFloat<px4::params::SE3_KRZ>) _param_krz,
@@ -1220,13 +1348,18 @@ private:
         (ParamFloat<px4::params::MPC_THR_HOVER>) _param_hover,
         (ParamInt<px4::params::SYS_AUTOSTART>) _param_autostart,
         (ParamInt<px4::params::SE3_CTRL>) _param_ctrl,
-        (ParamInt<px4::params::SE3_MODEL>) _param_model,
+        (ParamFloat<px4::params::SE3_MASS>) _param_mass,
+        (ParamFloat<px4::params::SE3_JXX>) _param_jxx,
+        (ParamFloat<px4::params::SE3_JYY>) _param_jyy,
+        (ParamFloat<px4::params::SE3_JZZ>) _param_jzz,
         (ParamFloat<px4::params::SE3_PKRX>) _param_pkrx,
         (ParamFloat<px4::params::SE3_PKRY>) _param_pkry,
         (ParamFloat<px4::params::SE3_PKRZ>) _param_pkrz,
         (ParamFloat<px4::params::SE3_PKWX>) _param_pkwx,
         (ParamFloat<px4::params::SE3_PKWY>) _param_pkwy,
-        (ParamFloat<px4::params::SE3_PKWZ>) _param_pkwz
+        (ParamFloat<px4::params::SE3_PKWZ>) _param_pkwz,
+        (ParamFloat<px4::params::SE3_PKI_XY>) _param_pki_xy,
+        (ParamFloat<px4::params::SE3_PKI_Z>) _param_pki_z
     )
 };
 

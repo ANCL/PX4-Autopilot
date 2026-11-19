@@ -1,4 +1,4 @@
-// Physical model, thrust-curve inversion, rotor allocation and ownership.
+// Physical allocation from PX4's rotor effectiveness, desaturation and ownership.
 
 #include <gtest/gtest.h>
 
@@ -12,18 +12,65 @@ namespace
 {
 
 constexpr float kGravity = 9.80665f;
+constexpr float kMass = 2.0736f;      // SE3_MASS default (Gazebo F450).
+constexpr float kArm = 0.16263456f;   // 4022_gz_f450 CA_ROTOR*_PX/PY
+constexpr float kRotorZ = -0.0112f;   // CA_ROTOR*_PZ
+constexpr float kCt = 12.f;           // CA_ROTOR*_CT [N]
+constexpr float kKm = 0.0137f;        // |CA_ROTOR*_KM| [m]
 
-Model f450()
+struct Rotor {
+	matrix::Vector3f position;
+	matrix::Vector3f axis;
+	float ct;
+	float km;
+};
+
+// 4022_gz_f450 rotors in actuator_motors order: FR, BL, FL, BR; 0 and 1 CCW.
+void f450_rotors(Rotor rotors[kRotorCount])
 {
-	Model model{};
-	EXPECT_TRUE(get_model(static_cast<uint8_t>(ModelId::GazeboF450), model));
-	return model;
+	const float x[kRotorCount] {kArm, -kArm, kArm, -kArm};
+	const float y[kRotorCount] {kArm, -kArm, -kArm, kArm};
+	const float km[kRotorCount] {kKm, kKm, -kKm, -kKm};
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		rotors[i] = Rotor{matrix::Vector3f{x[i], y[i], kRotorZ}, matrix::Vector3f{0.f, 0.f, -1.f}, kCt, km[i]};
+	}
 }
 
-Allocation configured(const Model &model)
+// Same columns as ActuatorEffectivenessRotors::computeEffectivenessMatrix():
+// moment ct (r x n) - ct km n, thrust ct n.
+Effectiveness effectiveness(const Rotor rotors[kRotorCount])
+{
+	Effectiveness E;
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		const matrix::Vector3f moment = rotors[i].position.cross(rotors[i].axis) * rotors[i].ct
+						- rotors[i].axis * (rotors[i].ct * rotors[i].km);
+		const matrix::Vector3f thrust = rotors[i].axis * rotors[i].ct;
+
+		for (int j = 0; j < 3; ++j) {
+			E(j, i) = moment(j);
+			E(j + 3, i) = thrust(j);
+		}
+	}
+
+	return E;
+}
+
+Effectiveness f450()
+{
+	Rotor rotors[kRotorCount];
+	f450_rotors(rotors);
+	return effectiveness(rotors);
+}
+
+const float kMinimum[kRotorCount] {0.f, 0.f, 0.f, 0.f};
+const float kMaximum[kRotorCount] {1.f, 1.f, 1.f, 1.f};
+
+Allocation configured(const Effectiveness &E = f450())
 {
 	Allocation allocation;
-	EXPECT_TRUE(allocation.configure(model));
+	EXPECT_TRUE(allocation.configure(E, kMinimum, kMaximum));
 	return allocation;
 }
 
@@ -34,15 +81,12 @@ AllocationResult allocate(const Allocation &allocation, float thrust, const matr
 	return result;
 }
 
-void expect_within_limits(const Model &model, const AllocationResult &result)
+void expect_within_limits(const AllocationResult &result)
 {
 	for (int i = 0; i < kRotorCount; ++i) {
-		const ThrustCurve &curve = model.rotors[i].thrust;
-		EXPECT_GE(result.rotor_thrust[i], rotor_thrust(curve, curve.u_min) - 1e-5f) << "rotor " << i;
-		EXPECT_LE(result.rotor_thrust[i], rotor_thrust(curve, curve.u_max) + 1e-5f) << "rotor " << i;
-		EXPECT_GE(result.command[i], curve.u_min) << "rotor " << i;
-		EXPECT_LE(result.command[i], curve.u_max) << "rotor " << i;
-		EXPECT_NEAR(rotor_thrust(curve, result.command[i]), result.rotor_thrust[i], 2e-4f) << "rotor " << i;
+		EXPECT_GE(result.command[i], 0.f) << "rotor " << i;
+		EXPECT_LE(result.command[i], 1.f) << "rotor " << i;
+		EXPECT_NEAR(result.rotor_thrust[i], kCt * result.command[i], 1e-5f) << "rotor " << i;
 	}
 }
 
@@ -57,118 +101,25 @@ void expect_wrench(const Wrench &actual, float thrust, const matrix::Vector3f &m
 
 float weight()
 {
-	return f450().mass * kGravity;
+	return kMass * kGravity;
 }
 
 } // namespace
 
-TEST(PhysicalAllocation, GazeboF450ModelMatchesSimulation)
-{
-	const Model model = f450();
-	EXPECT_TRUE(valid(model));
-	EXPECT_FLOAT_EQ(model.mass, 2.0736f);
-	EXPECT_NEAR(model.inertia(0, 0), 0.022078f, 1e-6f);
-	EXPECT_NEAR(model.inertia(2, 2), 0.043301f, 1e-6f);
-
-	// T(u) = 1.2e-5 (150 + 850 u)^2 at both ends of the command range.
-	EXPECT_NEAR(rotor_thrust(model.rotors[0].thrust, 0.f), 0.27f, 1e-6f);
-	EXPECT_NEAR(rotor_thrust(model.rotors[0].thrust, 1.f), 12.f, 1e-5f);
-
-	// Hover command; SITL Position-mode hover measured 0.5889.
-	float command = 0.f;
-	EXPECT_TRUE(rotor_command(model.rotors[0].thrust, weight() / kRotorCount, command));
-	EXPECT_NEAR(command, 0.5893f, 2e-4f);
-
-	Model unknown{};
-	EXPECT_FALSE(get_model(200, unknown));
-}
-
-TEST(PhysicalAllocation, ThrustCurveInversion)
-{
-	const ThrustCurve curves[] {
-		{0.27f, 3.06f, 8.67f, 0.f, 1.f},  // Gazebo F450
-		{0.5f, -0.8f, 12.f, 0.1f, 0.95f}, // Negative linear term, increasing from u_min
-		{0.f, 10.f, 0.f, 0.f, 1.f},       // Linear
-	};
-
-	for (const ThrustCurve &curve : curves) {
-		for (int k = 0; k <= 100; ++k) {
-			const float u = curve.u_min + (curve.u_max - curve.u_min) * static_cast<float>(k) / 100.f;
-			float inverse = -1.f;
-			ASSERT_TRUE(rotor_command(curve, rotor_thrust(curve, u), inverse)) << "u " << u;
-			EXPECT_NEAR(inverse, u, 2e-5f) << "u " << u;
-		}
-
-		float command = 0.f;
-		EXPECT_FALSE(rotor_command(curve, rotor_thrust(curve, curve.u_min) - 1e-3f, command));
-		EXPECT_FALSE(rotor_command(curve, rotor_thrust(curve, curve.u_max) + 1e-3f, command));
-		EXPECT_FALSE(rotor_command(curve, NAN, command));
-	}
-}
-
-TEST(PhysicalAllocation, InvalidModelsAreRejected)
-{
-	Allocation allocation;
-
-	Model model = f450();
-	model.mass = 0.f;
-	EXPECT_FALSE(valid(model));
-	EXPECT_FALSE(allocation.configure(model));
-	EXPECT_FALSE(allocation.configured());
-
-	model = f450();
-	model.inertia(0, 1) = 0.01f;    // Asymmetric
-	EXPECT_FALSE(valid(model));
-
-	model = f450();
-	model.inertia(0, 1) = model.inertia(1, 0) = 0.03f; // Symmetric, not positive definite
-	EXPECT_FALSE(valid(model));
-
-	model = f450();
-	model.rotors[2].thrust.a1 = -1.f;  // Decreasing at u_min = 0
-	EXPECT_FALSE(valid(model));
-
-	model = f450();
-	model.rotors[1].thrust.a2 = -1.f;  // Concave
-	EXPECT_FALSE(valid(model));
-
-	model = f450();
-	model.rotors[3].axis = matrix::Vector3f{0.1f, 0.f, -1.f}.normalized(); // Lateral thrust
-	EXPECT_FALSE(valid(model));
-
-	model = f450();
-	model.rotors[0].thrust.u_max = 1.2f;  // Beyond the actuator_motors range
-	EXPECT_FALSE(valid(model));
-
-	// Valid data, singular geometry: all rotors on one side cannot balance roll.
-	model = f450();
-
-	for (Rotor &rotor : model.rotors) {
-		rotor.position(1) = 0.16f;
-	}
-
-	EXPECT_TRUE(valid(model));
-	EXPECT_FALSE(allocation.configure(model));
-
-	model = f450();
-	model.rotors[0].position(0) = NAN;
-	EXPECT_FALSE(valid(model));
-}
-
 TEST(PhysicalAllocation, EffectivenessGeometryAndSigns)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	Rotor rotors[kRotorCount];
+	f450_rotors(rotors);
+	const Allocation allocation = configured();
 	const matrix::SquareMatrix<float, kRotorCount> &B = allocation.effectiveness();
 
 	for (int i = 0; i < kRotorCount; ++i) {
-		const Rotor &rotor = model.rotors[i];
-		// Upward thrust T at (x, y): roll moment -y T, pitch moment x T,
-		// reaction yaw moment +k T for a counter-clockwise rotor.
-		EXPECT_FLOAT_EQ(B(0, i), 1.f);
-		EXPECT_NEAR(B(1, i), -rotor.position(1), 1e-6f);
-		EXPECT_NEAR(B(2, i), rotor.position(0), 1e-6f);
-		EXPECT_NEAR(B(3, i), rotor.reaction, 1e-6f);
+		// Upward thrust CT u at (x, y): roll moment -y CT u, pitch moment
+		// x CT u, reaction yaw moment +KM CT u (PX4 sign: KM > 0 is CCW).
+		EXPECT_FLOAT_EQ(B(0, i), kCt);
+		EXPECT_NEAR(B(1, i), -rotors[i].position(1) * kCt, 1e-5f);
+		EXPECT_NEAR(B(2, i), rotors[i].position(0) * kCt, 1e-5f);
+		EXPECT_NEAR(B(3, i), rotors[i].km * kCt, 1e-6f);
 	}
 
 	// Rotor order of 4022_gz_f450 (CA_ROTOR*): FR, BL, FL, BR; 0 and 1 CCW.
@@ -186,16 +137,86 @@ TEST(PhysicalAllocation, EffectivenessGeometryAndSigns)
 	}
 }
 
+TEST(PhysicalAllocation, RotorThrustIsLinearInTheMotorCommand)
+{
+	// No thrust curve here: THR_MDL_FAC is applied once by the output driver.
+	const Allocation allocation = configured();
+
+	for (const float command : {0.f, 0.25f, 0.5f, 1.f}) {
+		for (int i = 0; i < kRotorCount; ++i) {
+			EXPECT_FLOAT_EQ(allocation.rotor_thrust(i, command), kCt * command);
+		}
+	}
+
+	// Doubling CT halves the commands for the same wrench.
+	Rotor rotors[kRotorCount];
+	f450_rotors(rotors);
+
+	for (Rotor &rotor : rotors) { rotor.ct *= 2.f; }
+
+	const AllocationResult nominal = allocate(allocation, weight(), {0.1f, -0.05f, 0.02f});
+	const AllocationResult doubled = allocate(configured(effectiveness(rotors)), weight(), {0.1f, -0.05f, 0.02f});
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		EXPECT_NEAR(doubled.command[i], 0.5f * nominal.command[i], 1e-6f);
+		EXPECT_NEAR(doubled.rotor_thrust[i], nominal.rotor_thrust[i], 1e-5f);
+	}
+}
+
+TEST(PhysicalAllocation, InvalidEffectivenessAndLimitsAreRejected)
+{
+	Rotor rotors[kRotorCount];
+	Allocation allocation;
+
+	// Lateral thrust (tilted rotor) is not allocated.
+	f450_rotors(rotors);
+	rotors[2].axis = matrix::Vector3f{0.1f, 0.f, -1.f}.normalized();
+	EXPECT_FALSE(allocation.configure(effectiveness(rotors), kMinimum, kMaximum));
+
+	// Downward thrust.
+	f450_rotors(rotors);
+	rotors[1].axis = matrix::Vector3f{0.f, 0.f, 1.f};
+	EXPECT_FALSE(allocation.configure(effectiveness(rotors), kMinimum, kMaximum));
+
+	// A failed motor's zeroed column (control_allocator) is singular.
+	Effectiveness failed = f450();
+
+	for (int row = 0; row < 6; ++row) { failed(row, 3) = 0.f; }
+
+	EXPECT_FALSE(allocation.configure(failed, kMinimum, kMaximum));
+
+	// Collinear rotors cannot produce independent moments.
+	f450_rotors(rotors);
+	rotors[2].position = rotors[0].position;
+	rotors[2].km = rotors[0].km;
+	EXPECT_FALSE(allocation.configure(effectiveness(rotors), kMinimum, kMaximum));
+
+	// Non-finite entries, reversible or empty command ranges.
+	Effectiveness invalid = f450();
+	invalid(0, 0) = NAN;
+	EXPECT_FALSE(allocation.configure(invalid, kMinimum, kMaximum));
+
+	const float reversible[kRotorCount] {-1.f, 0.f, 0.f, 0.f};
+	EXPECT_FALSE(allocation.configure(f450(), reversible, kMaximum));
+
+	const float empty[kRotorCount] {1.f, 1.f, 1.f, 1.f};
+	EXPECT_FALSE(allocation.configure(f450(), empty, kMaximum));
+	EXPECT_FALSE(allocation.configured());
+
+	// A later valid configuration succeeds.
+	EXPECT_TRUE(allocation.configure(f450(), kMinimum, kMaximum));
+	EXPECT_TRUE(allocation.configured());
+}
+
 TEST(PhysicalAllocation, HoverAndMomentDirections)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 
 	const AllocationResult hover = allocate(allocation, weight(), {});
 
 	for (int i = 0; i < kRotorCount; ++i) {
 		EXPECT_NEAR(hover.rotor_thrust[i], weight() / kRotorCount, 1e-4f);
-		EXPECT_NEAR(hover.command[i], 0.5893f, 2e-4f);
+		EXPECT_NEAR(hover.command[i], weight() / (kRotorCount * kCt), 1e-5f);
 	}
 
 	// Positive roll raises the left rotors (1, 2), positive pitch the front
@@ -219,8 +240,7 @@ TEST(PhysicalAllocation, HoverAndMomentDirections)
 
 TEST(PhysicalAllocation, FeasibleWrenchesAreReproducedExactly)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 
 	for (int k = 0; k < 64; ++k) {
 		const float phase = 0.37f * static_cast<float>(k);
@@ -228,28 +248,25 @@ TEST(PhysicalAllocation, FeasibleWrenchesAreReproducedExactly)
 		const matrix::Vector3f moment{0.6f * sinf(phase), 0.6f * cosf(0.7f * phase), 0.08f * sinf(2.1f * phase)};
 
 		const AllocationResult result = allocate(allocation, thrust, moment);
-		expect_within_limits(model, result);
+		expect_within_limits(result);
 		expect_wrench(result.achieved, thrust, moment, 2e-4f);
 		EXPECT_FLOAT_EQ(result.roll_pitch_scale, 1.f);
 		EXPECT_FLOAT_EQ(result.yaw_scale, 1.f);
 		EXPECT_FALSE(result.thrust_limited);
 
 		// The reported wrench is the one produced by the motor commands.
-		float rotor[kRotorCount];
-		allocation.thrust_from_commands(result.command, rotor);
-		expect_wrench(allocation.wrench(rotor), thrust, moment, 2e-3f);
+		expect_wrench(allocation.wrench(result.command), thrust, moment, 2e-4f);
 	}
 }
 
 TEST(PhysicalAllocation, LowThrustScalesRollPitchWithoutRaisingThrust)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 	const float thrust = 6.f;
 	const matrix::Vector3f moment{2.f, -1.f, 0.f};
 
 	const AllocationResult result = allocate(allocation, thrust, moment);
-	expect_within_limits(model, result);
+	expect_within_limits(result);
 
 	EXPECT_LT(result.roll_pitch_scale, 1.f);
 	EXPECT_GT(result.roll_pitch_scale, 0.f);
@@ -260,23 +277,22 @@ TEST(PhysicalAllocation, LowThrustScalesRollPitchWithoutRaisingThrust)
 	EXPECT_NEAR(result.achieved.moment(0), result.roll_pitch_scale * moment(0), 1e-4f);
 	EXPECT_NEAR(result.achieved.moment(1), result.roll_pitch_scale * moment(1), 1e-4f);
 
-	// The scale is maximal: some rotor sits at its idle limit.
+	// The scale is maximal: some motor sits at its minimum command.
 	float minimum = INFINITY;
 
-	for (const float rotor : result.rotor_thrust) { minimum = fminf(minimum, rotor); }
+	for (const float command : result.command) { minimum = fminf(minimum, command); }
 
-	EXPECT_NEAR(minimum, 0.27f, 1e-4f);
+	EXPECT_NEAR(minimum, 0.f, 1e-5f);
 }
 
 TEST(PhysicalAllocation, HighThrustReducesCollectiveBeforeRollPitch)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 	const float thrust = 46.f;
 	const matrix::Vector3f moment{1.f, 0.5f, 0.f};
 
 	const AllocationResult result = allocate(allocation, thrust, moment);
-	expect_within_limits(model, result);
+	expect_within_limits(result);
 
 	EXPECT_FLOAT_EQ(result.roll_pitch_scale, 1.f);
 	EXPECT_TRUE(result.thrust_limited);
@@ -286,19 +302,18 @@ TEST(PhysicalAllocation, HighThrustReducesCollectiveBeforeRollPitch)
 
 	float maximum = 0.f;
 
-	for (const float rotor : result.rotor_thrust) { maximum = fmaxf(maximum, rotor); }
+	for (const float command : result.command) { maximum = fmaxf(maximum, command); }
 
-	EXPECT_NEAR(maximum, 12.f, 1e-4f);
+	EXPECT_NEAR(maximum, 1.f, 1e-5f);
 }
 
 TEST(PhysicalAllocation, YawHasLowestPriority)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 	const matrix::Vector3f moment{0.3f, 0.2f, 2.f};
 
 	const AllocationResult result = allocate(allocation, weight(), moment);
-	expect_within_limits(model, result);
+	expect_within_limits(result);
 
 	EXPECT_FLOAT_EQ(result.roll_pitch_scale, 1.f);
 	EXPECT_LT(result.yaw_scale, 1.f);
@@ -311,18 +326,23 @@ TEST(PhysicalAllocation, YawHasLowestPriority)
 
 TEST(PhysicalAllocation, CollectiveLimitsAndInvalidRequests)
 {
-	const Model model = f450();
-	const Allocation allocation = configured(model);
+	const Allocation allocation = configured();
 
 	const AllocationResult high = allocate(allocation, 100.f, {});
-	EXPECT_NEAR(high.achieved.thrust, 48.f, 1e-4f);
+	EXPECT_NEAR(high.achieved.thrust, kRotorCount * kCt, 1e-4f);
 	EXPECT_TRUE(high.thrust_limited);
 
 	const AllocationResult low = allocate(allocation, -5.f, {});
-	EXPECT_NEAR(low.achieved.thrust, 4.f * 0.27f, 1e-4f);
+	EXPECT_NEAR(low.achieved.thrust, 0.f, 1e-5f);
 	EXPECT_TRUE(low.thrust_limited);
 
 	for (const float command : low.command) { EXPECT_FLOAT_EQ(command, 0.f); }
+
+	// Non-zero minimum commands (e.g. idle) are honoured.
+	Allocation idle;
+	const float minimum[kRotorCount] {0.1f, 0.1f, 0.1f, 0.1f};
+	ASSERT_TRUE(idle.configure(f450(), minimum, kMaximum));
+	EXPECT_NEAR(allocate(idle, 0.f, {}).achieved.thrust, kRotorCount * kCt * 0.1f, 1e-4f);
 
 	AllocationResult result{};
 	EXPECT_FALSE(allocation.allocate(Wrench{NAN, {}}, result));

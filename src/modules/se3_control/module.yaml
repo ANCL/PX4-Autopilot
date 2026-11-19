@@ -26,6 +26,34 @@ parameters:
             min: 0.0
             max: 100.0
             default: 3.0
+        SE3_KIXY:
+            description:
+                short: Native SE3 horizontal position-integral gain divided by mass
+                long: |
+                    Integral of the horizontal position error added to the
+                    acceleration command of all SE3_CTRL paths:
+                    a_cmd = a_d - K_x e_x - K_v e_v - K_i int(e_x) dt.
+                    The integrated error is limited to 0.5 m per axis and the
+                    integral acceleration to 1 m/s^2. It is frozen while the
+                    allocator or the normalized command saturates and reset on
+                    mode exit and faults. 0 disables it. Unit: 1/s^3.
+            type: float
+            min: 0.0
+            max: 5.0
+            decimal: 2
+            default: 0.3
+        SE3_KIZ:
+            description:
+                short: Native SE3 vertical position-integral gain divided by mass
+                long: |
+                    As SE3_KIXY for the vertical axis, with the integral
+                    acceleration limited to 2 m/s^2. 0 disables it.
+                    Unit: 1/s^3.
+            type: float
+            min: 0.0
+            max: 5.0
+            decimal: 2
+            default: 0.6
         SE3_KRX:
             description:
                 short: Native SE3 roll attitude-to-rate gain
@@ -67,11 +95,12 @@ parameters:
                     the PX4 rate controller and native allocation (original
                     SE3 controller).
                     PHYSICAL: physical Lee moment and thrust in SI units at the
-                    gyro rate, allocated in rotor-thrust space with the SE3_MODEL
-                    model; the PX4 rate controller is disabled while SE3 is
-                    selected and re-enabled on an SE3 fault. Requires
-                    THR_MDL_FAC = 0 and the model's airframe and output
-                    parameters.
+                    gyro rate, using SE3_MASS and SE3_J*, allocated with the
+                    PX4 rotor effectiveness (CA_ROTOR*, CT in newtons at full
+                    command); the PX4 rate controller is disabled while SE3 is
+                    selected and re-enabled on an SE3 fault. THR_MDL_FAC is
+                    applied once by the output driver, as for native
+                    allocation.
                     Fixed until reboot. Numbering changed from the earlier
                     experimental build (0 RATE_PX4, 1 PHYSICAL): a value of 1
                     stored by that build now selects RATE_PX4. The active path
@@ -85,17 +114,46 @@ parameters:
             max: 2
             reboot_required: true
             default: 1
-        SE3_MODEL:
+        SE3_MASS:
             description:
-                short: Native SE3 physical vehicle model
-                long: |
-                    Mass, inertia, rotor geometry and thrust curves used by
-                    SE3_CTRL = PHYSICAL. Fixed until reboot.
-            type: enum
-            values:
-                0: Gazebo F450 (4022_gz_f450)
-            reboot_required: true
-            default: 0
+                short: Native SE3 physical vehicle mass
+                long: Used by SE3_CTRL = PHYSICAL. Default is the Gazebo F450.
+            type: float
+            unit: kg
+            min: 0.05
+            max: 50.0
+            decimal: 4
+            default: 2.0736
+        SE3_JXX:
+            description:
+                short: Native SE3 physical roll inertia
+                long: Principal inertia about body x at the centre of mass (SE3_CTRL = PHYSICAL).
+            type: float
+            unit: kg m^2
+            min: 0.00001
+            max: 10.0
+            decimal: 6
+            default: 0.022078
+        SE3_JYY:
+            description:
+                short: Native SE3 physical pitch inertia
+                long: Principal inertia about body y at the centre of mass (SE3_CTRL = PHYSICAL).
+            type: float
+            unit: kg m^2
+            min: 0.00001
+            max: 10.0
+            decimal: 6
+            default: 0.022078
+        SE3_JZZ:
+            description:
+                short: Native SE3 physical yaw inertia
+                long: Principal inertia about body z at the centre of mass (SE3_CTRL = PHYSICAL).
+            type: float
+            unit: kg m^2
+            min: 0.00001
+            max: 10.0
+            decimal: 6
+            default: 0.043301
         SE3_PKRX:
             description:
                 short: Native SE3 physical roll attitude gain
@@ -150,6 +208,32 @@ parameters:
             max: 10.0
             decimal: 3
             default: 0.35
+        SE3_PKI_XY:
+            description:
+                short: Native SE3 physical roll/pitch attitude-integral gain
+                long: |
+                    Geometric integral -K_I int(e_R) dt added to the PHYSICAL
+                    Lee moment, integrated at the gyro rate. Bounded to
+                    J * 8 rad/s^2, frozen while the allocation scales the
+                    roll/pitch moment, reset on mode exit and faults.
+                    0 disables it. Unit: Nm/(rad s).
+            type: float
+            min: 0.0
+            max: 10.0
+            decimal: 3
+            default: 0.5
+        SE3_PKI_Z:
+            description:
+                short: Native SE3 physical yaw attitude-integral gain
+                long: |
+                    As SE3_PKI_XY for yaw, bounded to J_zz * 2 rad/s^2 and
+                    frozen while the allocation scales the yaw moment.
+                    0 disables it. Unit: Nm/(rad s).
+            type: float
+            min: 0.0
+            max: 10.0
+            decimal: 3
+            default: 0.1
     - group: Native Trajectory
       definitions:
         TRJ_SP_X:
@@ -175,7 +259,7 @@ parameters:
             unit: m
             min: -10
             max: 0
-            default: -0.75
+            default: -1.0
         TRJ_SP_YAW:
             description:
                 short: Live setpoint yaw
@@ -186,15 +270,15 @@ parameters:
             default: 0.0
         TRJ_STEP_HOLD:
             description:
-                short: Hold at each of five hardcoded setpoints
+                short: Hold at each of the five steps5 references
             type: float
             unit: s
             min: 0.1
             max: 60
-            default: 3.0
+            default: 5.0
         TRJ_HOME_X:
             description:
-                short: Circle and figure-eight center X
+                short: Trajectory home X (pattern centre, return point)
             type: float
             unit: m
             min: -10
@@ -202,7 +286,7 @@ parameters:
             default: 0.0
         TRJ_HOME_Y:
             description:
-                short: Circle and figure-eight center Y
+                short: Trajectory home Y (pattern centre, return point)
             type: float
             unit: m
             min: -10
@@ -210,15 +294,15 @@ parameters:
             default: 0.0
         TRJ_HOME_Z:
             description:
-                short: Circle and figure-eight center Z
+                short: Trajectory home Z (pattern altitude, return point)
             type: float
             unit: m
             min: -10
             max: 0
-            default: -0.75
+            default: -1.2
         TRJ_HOME_YAW:
             description:
-                short: Circle and figure-eight yaw
+                short: Trajectory home yaw (patterns and return)
             type: float
             unit: rad
             min: -6.28319
@@ -231,22 +315,23 @@ parameters:
             unit: m
             min: 0.05
             max: 5
-            default: 0.5
+            default: 1.0
         TRJ_CIR_T:
             description:
                 short: Circle duration
+                long: Duration of the constant-rate turns, excluding entry and return.
             type: float
             unit: s
             min: 0.1
             max: 600
-            default: 20.0
+            default: 60.0
         TRJ_CIR_TURNS:
             description:
                 short: Complete turns per circle
             type: int32
             min: 1
             max: 10
-            default: 1
+            default: 5
         TRJ_F8_AX:
             description:
                 short: Figure-eight X amplitude
@@ -254,7 +339,7 @@ parameters:
             unit: m
             min: 0.01
             max: 5
-            default: 0.5
+            default: 0.8
         TRJ_F8_AY:
             description:
                 short: Figure-eight Y amplitude
@@ -262,19 +347,20 @@ parameters:
             unit: m
             min: 0.01
             max: 5
-            default: 0.5
+            default: 1.2
         TRJ_F8_T:
             description:
                 short: Figure-eight duration
+                long: Duration of the constant-rate cycles, excluding entry and return.
             type: float
             unit: s
             min: 0.1
             max: 600
-            default: 30.0
+            default: 90.0
         TRJ_F8_TURNS:
             description:
                 short: Figure-eight cycles
             type: int32
             min: 1
             max: 10
-            default: 1
+            default: 5

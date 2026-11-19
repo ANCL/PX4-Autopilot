@@ -141,10 +141,13 @@ bool AttitudeLaws::physical(
   const DesiredAttitudeDynamics & desired,
   const matrix::Matrix3f & inertia,
   const PhysicalAttitudeGains & gains,
+  const Vector3 & attitude_integral,
   PhysicalMomentOutput & output)
 {
   if (!nonnegative(gains.attitude) ||
       !nonnegative(gains.angular_velocity) ||
+      !nonnegative(gains.integral) ||
+      !attitude_integral.isAllFinite() ||
       !inertia.isAllFinite()) {
     return false;
   }
@@ -155,14 +158,20 @@ bool AttitudeLaws::physical(
     return false;
   }
 
-  // M = -K_R e_R - K_Omega e_Omega + Omega x J Omega + J alpha_ff
+  // M = -K_R e_R - K_Omega e_Omega - K_I e_I + Omega x J Omega + J alpha_ff
   //
-  // alpha_ff = -Omega x (R^T R_d Omega_d) + R^T R_d dot(Omega_d), so the last
-  // term equals Lee's -J (hat(Omega) R^T R_d Omega_d - R^T R_d dot(Omega_d)).
+  // alpha_ff = -Omega x (R^T R_d Omega_d) + R^T R_d dot(Omega_d), so the
+  // J alpha_ff term equals Lee's
+  // -J (hat(Omega) R^T R_d Omega_d - R^T R_d dot(Omega_d)).
   PhysicalMomentOutput candidate{};
+
+  candidate.attitude_error = errors.attitude;
 
   candidate.attitude_feedback =
     -component_product(gains.attitude, errors.attitude);
+
+  candidate.integral_feedback =
+    -component_product(gains.integral, attitude_integral);
 
   candidate.angular_velocity_feedback =
     -component_product(
@@ -178,6 +187,7 @@ bool AttitudeLaws::physical(
   candidate.moment =
     candidate.attitude_feedback +
     candidate.angular_velocity_feedback +
+    candidate.integral_feedback +
     candidate.gyroscopic +
     candidate.inertial_feedforward;
 

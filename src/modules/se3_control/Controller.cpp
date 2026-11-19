@@ -5,7 +5,11 @@
 //   e_x = x - x_d
 //   e_v = v - v_d
 //
-//   a_cmd = a_d - (k_x/m)e_x - (k_v/m)e_v
+//   a_cmd = a_d - (k_x/m)e_x - (k_v/m)e_v - (k_i/m) I,  I = int sat(e_x) dt
+//
+// The integral removes steady position offsets (hover-thrust or mass error,
+// constant disturbances). It is bounded and frozen as described at
+// update_integral().
 //
 // The desired specific force includes gravity compensation:
 //
@@ -16,6 +20,7 @@
 
 #include "Controller.hpp"
 #include "AttitudeReference.hpp"
+#include "Integral.hpp"
 
 #include <cmath>
 
@@ -26,6 +31,15 @@ namespace
 
 constexpr float kGravity = 9.80665f;
 
+// Position error integrated at most at this magnitude per axis [m], so a large
+// step contributes little integral while the error is still transient.
+constexpr float kIntegralErrorLimit = 0.5f;
+
+// Bound on the integral acceleration |k_i I| per axis [m/s^2]: about 5.8 deg
+// of tilt horizontally, 20 % of gravity vertically.
+constexpr float kIntegralAccelerationXY = 1.0f;
+constexpr float kIntegralAccelerationZ = 2.0f;
+
 bool finite(const trajectory_generator::Vector3 & vector)
 {
   return std::isfinite(vector[0]) &&
@@ -33,17 +47,86 @@ bool finite(const trajectory_generator::Vector3 & vector)
          std::isfinite(vector[2]);
 }
 
+bool nonnegative(const Vector3 & values)
+{
+  return values.isAllFinite() &&
+         values(0) >= 0.0f &&
+         values(1) >= 0.0f &&
+         values(2) >= 0.0f;
+}
+
+bool valid_gains(const TranslationGains & gains)
+{
+  return std::isfinite(gains.position) && gains.position > 0.0f &&
+         std::isfinite(gains.velocity) && gains.velocity > 0.0f &&
+         nonnegative(gains.integral);
+}
+
+bool valid(const PositionIntegral & integral)
+{
+  return integral.value.isAllFinite() &&
+         integral.rate.isAllFinite() &&
+         integral.rate_derivative.isAllFinite();
+}
+
+Vector3 component_product(const Vector3 & first, const Vector3 & second)
+{
+  return {first(0) * second(0), first(1) * second(1), first(2) * second(2)};
+}
+
 }  // namespace
+
+// Integral update, once per outer-loop cycle before the translation law:
+//
+//   I += sat(e_x) dt,   |k_i I| <= kIntegralAcceleration{XY,Z}
+//
+// Per axis the applied rate is dI/dt = sat(e_x), and d^2I/dt^2 = e_v while
+// |e_x| is inside the saturation. Both are zero when the axis is frozen (the
+// caller reports saturated outputs), held at its bound, or has zero gain,
+// which also clears it. These are the exact rates the force derivatives use.
+bool Controller::update_integral(
+  const State & state,
+  const trajectory_generator::Reference & reference,
+  const TranslationGains & gains,
+  float dt,
+  bool freeze,
+  PositionIntegral & integral)
+{
+  if (!valid_gains(gains) || !std::isfinite(dt) || dt < 0.0f ||
+      !state.position.isAllFinite() || !state.velocity.isAllFinite() ||
+      !finite(reference.position) || !finite(reference.velocity) ||
+      !valid(integral)) {
+    return false;
+  }
+
+  PositionIntegral next = integral;
+
+  for (int axis = 0; axis < 3; ++axis) {
+    const float error = state.position(axis) - reference.position[axis];
+    const float velocity_error = state.velocity(axis) - reference.velocity[axis];
+    const float bound = axis < 2 ? kIntegralAccelerationXY : kIntegralAccelerationZ;
+    const float limit = gains.integral(axis) > 0.0f ? bound / gains.integral(axis) : 0.0f;
+    const float input = fminf(fmaxf(error, -kIntegralErrorLimit), kIntegralErrorLimit);
+
+    const bool active = integrate_bounded(next.value(axis), input, dt, limit, freeze);
+    next.rate(axis) = active ? input : 0.0f;
+    next.rate_derivative(axis) =
+      active && fabsf(error) < kIntegralErrorLimit ? velocity_error : 0.0f;
+  }
+
+  integral = next;
+  return true;
+}
 
 bool Controller::compute_translation(
   const State & state,
   const trajectory_generator::Reference & reference,
   const TranslationGains & gains,
+  const PositionIntegral & integral,
   TranslationOutput & output)
 {
   // Validate inputs before calculating a control command.
-  if (!std::isfinite(gains.position) || gains.position <= 0.0f ||
-      !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
+  if (!valid_gains(gains) || !valid(integral) ||
       !state.position.isAllFinite() ||
       !state.velocity.isAllFinite() ||
       !finite(reference.position) ||
@@ -75,11 +158,16 @@ bool Controller::compute_translation(
   const Vector3 position_error = state.position - desired_position;
   const Vector3 velocity_error = state.velocity - desired_velocity;
 
+  // Bounded integral part, applied before the desired force and attitude.
+  const Vector3 integral_acceleration =
+    -component_product(gains.integral, integral.value);
+
   // Kinematic acceleration command with trajectory feedforward.
   const Vector3 acceleration =
     desired_acceleration -
     position_error * gains.position -
-    velocity_error * gains.velocity;
+    velocity_error * gains.velocity +
+    integral_acceleration;
 
   const Vector3 gravity{0.0f, 0.0f, kGravity};
 
@@ -91,6 +179,7 @@ bool Controller::compute_translation(
   }
 
   output.acceleration = acceleration;
+  output.integral = integral_acceleration;
   output.specific_force = force;
 
   return true;
@@ -99,14 +188,14 @@ bool Controller::compute_translation(
 // Analytic desired-force derivatives from the nominal rigid-body model.
 //
 // Specific force:
-//   B = A/m = a_d - (kx/m)e_x - (kv/m)e_v - g e3
+//   B = A/m = a_d - (kx/m)e_x - (kv/m)e_v - (ki/m)I - g e3
 //
 // Model acceleration:
 //   a_model = g e3 - u b3,  u = -B . b3
 //
-// Specific-force derivatives:
-//   B_dot  = j_d - (kx/m)e_v - (kv/m)e_a
-//   B_ddot = s_d - (kx/m)e_a - (kv/m)e_j
+// Specific-force derivatives, with the integral rates of its latest update:
+//   B_dot  = j_d - (kx/m)e_v - (kv/m)e_a - (ki/m)dI/dt
+//   B_ddot = s_d - (kx/m)e_a - (kv/m)e_j - (ki/m)d^2I/dt^2
 //
 // Translational acceleration and jerk are model-derived, not obtained by
 // numerically differentiating estimator measurements.
@@ -114,15 +203,15 @@ bool Controller::compute_force_derivatives(
   const State & state,
   const trajectory_generator::Reference & reference,
   const TranslationGains & gains,
+  const PositionIntegral & integral,
   const TranslationOutput & translation,
   ForceDerivatives & output)
 {
-  if (!std::isfinite(gains.position) || gains.position <= 0.0f ||
-      !std::isfinite(gains.velocity) || gains.velocity <= 0.0f ||
+  if (!valid_gains(gains) || !valid(integral) ||
       !state.velocity.isAllFinite() ||
       !state.attitude.isAllFinite() ||
       !state.angular_velocity.isAllFinite() ||
-       !translation.specific_force.isAllFinite() ||
+      !translation.specific_force.isAllFinite() ||
       !finite(reference.velocity) ||
       !finite(reference.acceleration) ||
       !finite(reference.jerk) ||
@@ -178,7 +267,8 @@ bool Controller::compute_force_derivatives(
   const Vector3 force_first =
     jerk_reference -
     velocity_error * gains.position -
-    acceleration_error * gains.velocity;
+    acceleration_error * gains.velocity -
+    component_product(gains.integral, integral.rate);
 
   // R_dot = R hat(Omega).
   // Differentiate the body z-axis using measured body angular velocity.
@@ -215,7 +305,8 @@ bool Controller::compute_force_derivatives(
   const Vector3 force_second =
     snap_reference -
     acceleration_error * gains.position -
-    jerk_error * gains.velocity;
+    jerk_error * gains.velocity -
+    component_product(gains.integral, integral.rate_derivative);
 
   if (!force_first.isAllFinite() || !force_second.isAllFinite()) {
     return false;
@@ -242,12 +333,13 @@ bool Controller::compute_geometry(
   const State & state,
   const trajectory_generator::Reference & reference,
   const TranslationGains & gains,
+  const PositionIntegral & integral,
   GeometricOutput & output)
 {
   GeometricOutput candidate{};
 
   if (!compute_translation(
-        state, reference, gains, candidate.translation)) {
+        state, reference, gains, integral, candidate.translation)) {
     return false;
   }
 
@@ -255,6 +347,7 @@ bool Controller::compute_geometry(
         state,
         reference,
         gains,
+        integral,
         candidate.translation,
         candidate.force_derivatives)) {
     return false;

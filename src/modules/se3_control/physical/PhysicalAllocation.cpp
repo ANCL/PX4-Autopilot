@@ -22,36 +22,41 @@ Vector4 column(const matrix::SquareMatrix<float, kRotorCount> &matrix, int index
 
 } // namespace
 
-bool Allocation::configure(const Model &model)
+bool Allocation::configure(const Effectiveness &effectiveness, const float minimum[kRotorCount],
+			   const float maximum[kRotorCount])
 {
 	_configured = false;
 
-	if (!valid(model)) {
+	if (!effectiveness.isAllFinite()) {
 		return false;
 	}
 
-	matrix::SquareMatrix<float, kRotorCount> effectiveness;
+	matrix::SquareMatrix<float, kRotorCount> B;
 
 	for (int i = 0; i < kRotorCount; ++i) {
-		const Rotor &rotor = model.rotors[i];
-		const matrix::Vector3f moment = rotor.position.cross(rotor.axis) - rotor.axis * rotor.reaction;
-		effectiveness(0, i) = -rotor.axis(2);
-		effectiveness(1, i) = moment(0);
-		effectiveness(2, i) = moment(1);
-		effectiveness(3, i) = moment(2);
-		_minimum[i] = rotor_thrust(rotor.thrust, rotor.thrust.u_min);
-		_maximum[i] = rotor_thrust(rotor.thrust, rotor.thrust.u_max);
+		// Upward thrust (negative body z) only: lateral thrust is not allocated.
+		const float thrust = -effectiveness(5, i);
+
+		if (!(thrust > 0.f) || fabsf(effectiveness(3, i)) > 1e-3f * thrust || fabsf(effectiveness(4, i)) > 1e-3f * thrust
+		    || !std::isfinite(minimum[i]) || !std::isfinite(maximum[i]) || minimum[i] < 0.f || minimum[i] >= maximum[i]) {
+			return false;
+		}
+
+		B(0, i) = thrust;
+		B(1, i) = effectiveness(0, i);
+		B(2, i) = effectiveness(1, i);
+		B(3, i) = effectiveness(2, i);
 	}
 
 	matrix::SquareMatrix<float, kRotorCount> inverse;
 
-	if (!matrix::inv(effectiveness, inverse) || !inverse.isAllFinite()) {
+	if (!matrix::inv(B, inverse) || !inverse.isAllFinite()) {
 		return false;
 	}
 
 	// Reject an ill-conditioned inverse and any rotor that does not add to the
 	// collective (the desaturation below divides by these shares).
-	const matrix::SquareMatrix<float, kRotorCount> identity = effectiveness * inverse;
+	const matrix::SquareMatrix<float, kRotorCount> identity = B * inverse;
 
 	for (int i = 0; i < kRotorCount; ++i) {
 		if (inverse(i, 0) <= 0.f) {
@@ -65,9 +70,14 @@ bool Allocation::configure(const Model &model)
 		}
 	}
 
-	_model = model;
-	_effectiveness = effectiveness;
+	_matrix = B;
 	_inverse = inverse;
+
+	for (int i = 0; i < kRotorCount; ++i) {
+		_minimum[i] = minimum[i];
+		_maximum[i] = maximum[i];
+	}
+
 	_configured = true;
 	return true;
 }
@@ -78,12 +88,12 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 		return false;
 	}
 
-	// Rotor-thrust change per unit of each wrench axis (columns of B^-1).
+	// Command change per unit of each wrench axis (columns of B^-1).
 	const Vector4 share = column(_inverse, 0);
 	const Vector4 tilt = column(_inverse, 1) * request.moment(0) + column(_inverse, 2) * request.moment(1);
 	const Vector4 yaw = column(_inverse, 3) * request.moment(2);
 
-	// Express each rotor's limits as collective values: rotor i stays within
+	// Express each motor's limits as collective values: motor i stays within
 	// its limits for collective s and roll/pitch fraction c when
 	//   low(i) - c p(i) <= s <= high(i) - c p(i).
 	float low[kRotorCount];
@@ -100,7 +110,7 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 		collective_max = fminf(collective_max, high[i]);
 	}
 
-	// 1. Collective without moments; only the rotor limits can change it.
+	// 1. Collective without moments; only the motor limits can change it.
 	const float collective = fminf(fmaxf(request.thrust, collective_min), collective_max);
 
 	// 2. Largest roll/pitch fraction c in [0, 1] for which some collective in
@@ -128,34 +138,31 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 		allocated_collective = fminf(allocated_collective, high[i] - tilt_scale * p[i]);
 	}
 
-	Vector4 thrust = share * allocated_collective + tilt * tilt_scale;
+	Vector4 command = share * allocated_collective + tilt * tilt_scale;
 
-	// 3. Largest yaw fraction that keeps every rotor within its limits.
+	// 3. Largest yaw fraction that keeps every motor within its limits.
 	float yaw_scale = 1.f;
 
 	for (int i = 0; i < kRotorCount; ++i) {
 		if (yaw(i) > 0.f) {
-			yaw_scale = fminf(yaw_scale, fmaxf(_maximum[i] - thrust(i), 0.f) / yaw(i));
+			yaw_scale = fminf(yaw_scale, fmaxf(_maximum[i] - command(i), 0.f) / yaw(i));
 
 		} else if (yaw(i) < 0.f) {
-			yaw_scale = fminf(yaw_scale, fmaxf(thrust(i) - _minimum[i], 0.f) / -yaw(i));
+			yaw_scale = fminf(yaw_scale, fmaxf(command(i) - _minimum[i], 0.f) / -yaw(i));
 		}
 	}
 
-	thrust += yaw * yaw_scale;
+	command += yaw * yaw_scale;
 
 	AllocationResult candidate{};
 
 	for (int i = 0; i < kRotorCount; ++i) {
 		// Only single-precision rounding remains outside the limits here.
-		candidate.rotor_thrust[i] = fminf(fmaxf(thrust(i), _minimum[i]), _maximum[i]);
-
-		if (!rotor_command(_model.rotors[i].thrust, candidate.rotor_thrust[i], candidate.command[i])) {
-			return false;
-		}
+		candidate.command[i] = fminf(fmaxf(command(i), _minimum[i]), _maximum[i]);
+		candidate.rotor_thrust[i] = rotor_thrust(i, candidate.command[i]);
 	}
 
-	candidate.achieved = wrench(candidate.rotor_thrust);
+	candidate.achieved = wrench(candidate.command);
 	candidate.roll_pitch_scale = tilt_scale;
 	candidate.yaw_scale = yaw_scale;
 	candidate.thrust_limited = fabsf(candidate.achieved.thrust - request.thrust) >
@@ -165,23 +172,16 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 	return true;
 }
 
-Wrench Allocation::wrench(const float thrust[kRotorCount]) const
+Wrench Allocation::wrench(const float command[kRotorCount]) const
 {
-	Vector4 rotor;
+	Vector4 u;
 
 	for (int i = 0; i < kRotorCount; ++i) {
-		rotor(i) = thrust[i];
+		u(i) = command[i];
 	}
 
-	const Vector4 wrench = _effectiveness * rotor;
-	return Wrench{wrench(0), matrix::Vector3f{wrench(1), wrench(2), wrench(3)}};
-}
-
-void Allocation::thrust_from_commands(const float command[kRotorCount], float thrust[kRotorCount]) const
-{
-	for (int i = 0; i < kRotorCount; ++i) {
-		thrust[i] = rotor_thrust(_model.rotors[i].thrust, command[i]);
-	}
+	const Vector4 w = _matrix * u;
+	return Wrench{w(0), matrix::Vector3f{w(1), w(2), w(3)}};
 }
 
 } // namespace se3_physical

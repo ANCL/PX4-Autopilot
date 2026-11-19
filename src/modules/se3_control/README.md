@@ -34,8 +34,9 @@ toolkit (SITL stack, recording, analysis) are documented in that toolkit.
                              └──────────────► actuator_motors ◄───────────────────┘
 ```
 
-All three paths share the same trajectories, geometric reference, hold,
-Commander lifecycle and fault handling. Only what is commanded differs.
+All three paths share the same trajectories, geometric reference (including
+the position integral), hold, Commander lifecycle and fault handling. Only
+what is commanded differs.
 
 ## Control paths
 
@@ -65,13 +66,40 @@ shown by `se3_control status`.
 
 ### Common reference (all paths, 100 Hz)
 
-`Controller.cpp`, mass-normalized (gains are `kx/m`, `kv/m`):
+`Controller.cpp`, mass-normalized (gains are `kx/m`, `kv/m`, `ki/m`):
 
 ```
-a     = a_ref - Kx (p - p_ref) - Kv (v - v_ref)      local NED
+e_x   = p - p_ref,  e_v = v - v_ref                  local NED
+I    += sat(e_x, 0.5 m) dt                           position integral [m s]
+a     = a_ref - Kx e_x - Kv e_v - Ki I               acceleration command
 A/m   = a - g e3                                     specific force
 u     = -(A/m) · (R e3)                              collective (rejected if <= 0)
 ```
+
+**Position integral** (`Controller::update_integral()`, `Integral.hpp`).
+`Ki = diag(SE3_KIXY, SE3_KIXY, SE3_KIZ)`. It is added to the acceleration
+command, so it shapes the desired force, `R_d` and the thrust of every path.
+It is updated once per 100 Hz cycle, before the translation law.
+
+- **Bounded:** `|Ki I| <= 1 m/s²` per horizontal axis and `2 m/s²`
+  vertically. The integrated error is saturated at 0.5 m per axis, so a large
+  step contributes little while it is transient.
+- **Anti-windup:** nothing is integrated while the previous output saturated:
+  - RATE_PX4 and ATTITUDE_PX4: normalized thrust outside [0, 1], a clamped
+    body rate (RATE_PX4), or `control_allocator_status` reporting unallocated
+    thrust or roll/pitch torque.
+  - PHYSICAL: `se3_allocation_status` with `thrust_limited` or
+    `roll_pitch_scale < 1`.
+
+  At its bound the integral holds, and an error back inside acts at once.
+  `se3_trajectory_status.integral_frozen` logs the freeze.
+- **Reset** on mode entry and exit, on every fault and therefore on estimator
+  resets (a controller fault), and per axis when its gain is 0. Trajectory
+  and hold commands keep it: it represents a model offset, not a reference.
+- **Derivatives:** the force derivatives use the rates of the latest update
+  (`dI/dt = sat(e_x)`, `d²I/dt² = e_v` inside the saturation, both zero when
+  frozen, held at the bound or saturated), so `Ω_d` and `Ω̇_d` stay
+  consistent with the integral actually applied.
 
 `AttitudeReference.cpp` builds `R_d` from `b3_d = -A/‖A‖` and the reference
 heading (Lee et al., 2010). It also computes `Ω_d` and `Ω̇_d` analytically from
@@ -115,10 +143,20 @@ the same work queue as Run()) computes the Lee wrench in SI units:
 
 ```
 f = m · ( −(A/m) · (R e3) )                                    [N]
-M = −K_R e_R − K_Ω e_Ω + Ω × JΩ + J α_ff                       [N m]
-α_ff = −Ω × (Rᵀ R_d Ω_d) + Rᵀ R_d Ω̇_d
+M = −K_R e_R − K_Ω e_Ω − K_I e_I + Ω × JΩ + J α_ff             [N m]
+α_ff = −Ω × (Rᵀ R_d Ω_d) + Rᵀ R_d Ω̇_d,   e_I = ∫ e_R dt
 K_R = SE3_PKR{X,Y,Z} [N m/rad],  K_Ω = SE3_PKW{X,Y,Z} [N m s/rad]
+K_I = diag(SE3_PKI_XY, SE3_PKI_XY, SE3_PKI_Z) [N m/(rad s)]
+m = SE3_MASS,  J = diag(SE3_JXX, SE3_JYY, SE3_JZZ)
 ```
+
+The geometric attitude integral `e_I` is integrated in the inner loop, over
+each gyro-sample interval, after the moment for that sample is computed. It is
+bounded to `|K_I e_I| <= J · 8 rad/s²` (roll/pitch) and `J_zz · 2 rad/s²`
+(yaw). The allocator's reply to the previous wrench freezes the roll/pitch
+axes while `roll_pitch_scale < 1`, and yaw while `yaw_scale < 1`. It is reset
+on mode entry and exit, on faults and whenever the neutral wrench is used.
+`se3_wrench_setpoint.moment_integral` logs `−K_I e_I`.
 
 The inner loop publishes `se3_wrench_setpoint` only while the vehicle is armed
 in the SE3 mode with allocation enabled and the PX4 rate and attitude loops
@@ -135,82 +173,91 @@ law, its gains or `SE3_RATE_MAX`.
 
 ## Physical model and allocation (`physical/`)
 
-### Vehicle model (`PhysicalModel.{hpp,cpp}`)
+### Vehicle and rotor model
 
-Models are plain data selected by `SE3_MODEL`. Each wrench carries the model
-id, so the controller (mass, inertia) and the allocator (geometry, thrust
-curves) always use the same description. Only one model exists:
+The PHYSICAL path uses no separate vehicle model. It uses:
 
-| `SE3_MODEL` | Model | Source |
+- **Mass and inertia:** `SE3_MASS` and `SE3_JXX/JYY/JZZ`, about the centre of
+  mass. The defaults are the Gazebo F450: 2.0736 kg and
+  diag(0.022078, 0.022078, 0.043301) kg m².
+- **Rotor model:** PX4's own rotor effectiveness, which `control_allocator`
+  builds from `CA_ROTOR*_PX/PY/PZ`, `CA_ROTOR*_AX/AY/AZ`, `CA_ROTOR*_CT` and
+  `CA_ROTOR*_KM` (`ActuatorEffectivenessRotors`). Column `i` is the wrench of
+  rotor `i` per unit motor command:
+
+  ```
+  thrust  CT_i n_i                       [N]
+  moment  CT_i (r_i × n_i − KM_i n_i)    [N m]
+  ```
+
+  With `CT` given in newtons (thrust at full command), this matrix is the SI
+  rotor model: rotor thrust is `CT_i u_i`, where `u_i` is the thrust-linear
+  `actuator_motors` command. Native allocation normalizes the same matrix, so
+  `CT`'s scale does not change native control.
+- **Thrust curve:** applied once, by the output driver (`FunctionMotors`,
+  `THR_MDL_FAC`), exactly as for native allocation. The physical allocator
+  never applies a curve of its own.
+
+The F450 airframe `4022_gz_f450` sets the Gazebo model's geometry. Rotors are
+in `actuator_motors` order (FRD), with hubs at ±0.16263456 m, `PZ = −0.0112 m`
+and thrust axes (0, 0, −1):
+
+| Rotor | Position | `KM` |
 |---|---|---|
-| 0 | Gazebo F450 | `Tools/simulation/gz/models/f450/model.sdf`, airframe `4022_gz_f450` |
+| 0 | front right | +0.0137 (CCW) |
+| 1 | back left | +0.0137 (CCW) |
+| 2 | front left | −0.0137 (CW) |
+| 3 | back right | −0.0137 (CW) |
 
-- **Mass:** 2.0736 kg (base 2.0232 kg + 4 × 0.0126 kg rotors).
-- **Inertia:** diag(0.022078, 0.022078, 0.043301) kg m² about the composite
-  centre of mass.
-- **Rotors** (`actuator_motors` order, FRD), arm 0.16263 m, plane 0.0112 m
-  above the CoM:
-  - 0: front right, CCW
-  - 1: back left, CCW
-  - 2: front left, CW
-  - 3: back right, CW
-- **Reaction coefficient:** 0.0137 m (the SDF `momentConstant`).
-- **Thrust curve:** Gazebo `T = k_f ω²` with `k_f = 1.2e-5`, and PX4 commands
-  `ω = 150 + 850 u` (`SIM_GZ_EC_MIN/MAX`). Therefore
-  `T(u) = 0.27 + 3.06 u + 8.67 u²` N on `u ∈ [0, 1]`.
-- **Not modelled:** rotor drag and rolling moment, the 12.5 ms motor time
-  constant, airspeed thrust loss, and Gazebo's 1 rad/s speed quantization.
+`CT = 12` N is the Gazebo thrust at full command,
+`k_f (150 + 850)² = 1.2e-5 · 1000²`. `THR_MDL_FAC` keeps its default of 0.
+Other vehicles configure their own `CA_ROTOR*`, `THR_MDL_FAC` and `SE3_*`
+values; generic airframe defaults are unchanged.
 
-These are simulation coefficients. **No hardware motor model exists.** A
-hardware model needs measured coefficients and must not reuse these.
-
-`valid()` requires:
-- positive mass and a symmetric positive-definite inertia;
-- vertical unit thrust axes;
-- convex, strictly increasing thrust curves.
-
-`rotor_command()` inverts `T(u)` in closed form, using the larger root in a
-cancellation-free form, and rejects thrusts outside `[T(u_min), T(u_max)]`.
+**Thrust-model accuracy.** `T = CT u` is exact only if `THR_MDL_FAC`
+linearizes the real motor curve. The Gazebo F450 curve is
+`T(u) = 0.27 + 3.06 u + 8.67 u²` N. With `THR_MDL_FAC = 0` the linear model
+over-predicts thrust below full command (5.08 N per rotor at hover is
+commanded as `u = 0.42`, which produces 3.1 N). PHYSICAL hover then depends
+on the vertical position integral (bounded at 2 m/s²) and a steady
+position error. A `THR_MDL_FAC` near 0.7 matches the Gazebo curve within a
+few percent. See Validation.
 
 ### Compatibility requirements
 
 PHYSICAL refuses to run (SE3 reports itself unhealthy and cannot be selected)
-unless all of the following hold. They are checked at boot and on every
-parameter update; none is ever changed automatically.
-
-- `THR_MDL_FAC = 0`. Otherwise PX4 would apply a second thrust curve to the
-  same command.
-- The model's required parameters, for the Gazebo F450:
-  - `SYS_AUTOSTART=4022`
-  - `CA_AIRFRAME=0`, `CA_ROTOR_COUNT=4`
-  - `SIM_GZ_EC_FUNC1..4 = 101..104`
-  - `SIM_GZ_EC_MIN1..4 = 150`, `SIM_GZ_EC_MAX1..4 = 1000`
-- Positive, finite `SE3_PK*` gains.
+unless the `SE3_PK*` attitude gains are positive, `SE3_PKI_*` are
+non-negative, and `SE3_MASS` and `SE3_J*` are positive and finite.
 
 In `control_allocator` (`se3_motors_compatible()`) the following must also
 hold; otherwise the wrench is reported as `compatible = false`:
 - exactly one effectiveness matrix;
-- the model's 4 motors and no servos;
+- exactly 4 motors and no servos;
 - non-reversible motors with the [0, 1] range.
 
-### Rotor-thrust allocation (`PhysicalAllocation.{hpp,cpp}`)
+`Allocation::configure()` additionally rejects (also `compatible = false`):
+- lateral or downward rotor thrust;
+- a singular or ill-conditioned geometry, including a failed motor's zeroed
+  column;
+- a weak yaw row that PX4 zeroed (all entries ≤ 0.05).
 
-The wrench `W = [f, Mx, My, Mz]` is linear in the rotor thrusts:
+### Motor-command allocation (`PhysicalAllocation.{hpp,cpp}`)
+
+The wrench `W = [f, Mx, My, Mz]` is linear in the motor commands:
 
 ```
-W = B T,   B_0i = −n_i,z,   B_(1..3)i = r_i × n_i − k_i n_i,   T = B⁻¹ W
+W = B u,   B_0i = −E_(z thrust),i,   B_(1..3)i = E_(moment),i,   u = B⁻¹ W
 ```
 
-Feasibility is enforced in thrust coordinates, where the rotor limits form a
-box and the map is exactly linear. Each feasible thrust is then inverted
-through the thrust curve, so no linearization of the motor model is involved.
-Desaturation priorities (the PX4 `MC_AIRMODE = 0` policy, applied regardless
-of `MC_AIRMODE`):
+`B` is rebuilt after every effectiveness update. Feasibility is enforced in
+command coordinates, where the motor limits form a box and the map is exactly
+linear. Desaturation priorities (the PX4 `MC_AIRMODE = 0` policy, applied
+regardless of `MC_AIRMODE`):
 
 1. **Roll/pitch:** scaled as a vector (direction preserved), only if no
    collective at or below the request makes it feasible.
-2. **Collective:** reduced as needed; never raised, except to the all-rotors-idle
-   minimum.
+2. **Collective:** reduced as needed; never raised, except to the
+   all-motors-minimum value.
 3. **Yaw:** scaled to fit without changing 1 or 2. Unlike native PX4, no yaw
    margin is bought by reducing collective.
 
@@ -244,6 +291,8 @@ motor-failure handling, and `actuator_motors` publication.
 **Reporting.** `se3_allocation_status` reports the wrench of the commands
 actually published: after slew limiting, with stopped or failed motors
 contributing zero thrust. `valid = false` means not all rotors are running.
+The roll/pitch and yaw scales and `thrust_limited` are the anti-windup inputs
+of both SE3 integrals.
 
 ## Source organization
 
@@ -251,18 +300,20 @@ contributing zero thrust. `valid = false` means not all rotors are running.
 |---|---|
 | `Runtime.cpp` | `se3_control` module: Commander registration, 100 Hz loop, hold/trajectory lifecycle, path selection, fault handling, shell commands, PHYSICAL inner-loop glue |
 | `ControlPath.hpp` | `SE3_CTRL` mapping, per-path PX4 controllers, publish/ownership predicate (pure, unit-tested) |
-| `Controller.{hpp,cpp}` | translation law, force derivatives, geometric output |
+| `Controller.{hpp,cpp}` | translation law with the position integral, force derivatives, geometric output |
+| `Integral.hpp` | bounded, freezable integration step shared by both integrals |
 | `AttitudeReference.{hpp,cpp}` | `R_d`, `Ω_d`, `Ω̇_d` from the specific force and heading |
 | `AttitudeLaws.{hpp,cpp}` | `e_R`/`e_Ω`; body-rate law, physical Lee moment, and a normalized-torque law that the runtime does not use |
 | `Types.hpp` | shared state, gain and output types |
-| `trajectory/` | `Trajectory.hpp` interface, `Catalog.cpp` (named trajectories, `TRJ_*` parameters), `Sampler.cpp` (analytic segment sampling, ninth-order time scaling, derivatives through snap). No dependency on SE3 gains, flight modes or uORB. |
-| `physical/` | `se3_physical` library: `PhysicalModel`, `PhysicalAllocation` (shared with `control_allocator`). `PhysicalPath` holds the module's PHYSICAL runtime state, built only into `se3_control`. |
+| `trajectory/` | `Trajectory.hpp` interface, `Catalog.cpp` (named plans: entries, patterns, returns), `Parameters.cpp` (`TRJ_*` access), `Sampler.cpp` (C4 Hermite segments and patterns, derivatives through snap). No dependency on SE3 gains, flight modes or uORB. |
+| `physical/` | `se3_physical` library: `PhysicalAllocation` (shared with `control_allocator`). `PhysicalPath` holds the module's PHYSICAL runtime state (mass, inertia, reference, attitude integral), built only into `se3_control`. |
 | `Se3MathTest.cpp`, `physical/PhysicalAllocationTest.cpp` | unit tests |
 | `module.yaml` | `SE3_*` and `TRJ_*` parameters |
 
 Outside the module:
 - `msg/Se3WrenchSetpoint.msg`, `msg/Se3AllocationStatus.msg`, `msg/Se3TrajectoryStatus.msg`
 - the physical input in `control_allocator`
+- the F450 rotor geometry in `ROMFS/px4fmu_common/init.d-posix/airframes/4022_gz_f450`
 - `logger/logged_topics.cpp`
 - `boards/px4/fmu-v6c/se3.px4board`
 - startup lines in `boards/px4/fmu-v6c/init/rc.board_extras` and `ROMFS/px4fmu_common/init.d-posix/rcS`
@@ -274,27 +325,36 @@ Outside the module:
 | `SE3_ENABLE` | 1 | all | allow selection (registers regardless) |
 | `SE3_CTRL` | 1 | all | control path, reboot required |
 | `SE3_KX`, `SE3_KV` | 4.0, 3.0 | all | position/velocity gain divided by mass |
+| `SE3_KIXY`, `SE3_KIZ` | 0.3, 0.6 1/s³ | all | position-integral gain divided by mass |
 | `SE3_KRX/KRY/KRZ` | 5, 5, 2 | RATE_PX4 | attitude-to-rate gain |
 | `SE3_RATE_MAX` | 3.0 rad/s | RATE_PX4 | body-rate limit |
-| `SE3_MODEL` | 0 | PHYSICAL | physical model, reboot required |
+| `SE3_MASS` | 2.0736 kg | PHYSICAL | vehicle mass |
+| `SE3_JXX/JYY/JZZ` | 0.022078, 0.022078, 0.043301 kg m² | PHYSICAL | principal inertia |
 | `SE3_PKRX/PKRY/PKRZ` | 5, 5, 1.1 N m/rad | PHYSICAL | `K_R` |
 | `SE3_PKWX/PKWY/PKWZ` | 0.53, 0.53, 0.35 N m s/rad | PHYSICAL | `K_Ω` |
+| `SE3_PKI_XY`, `SE3_PKI_Z` | 0.5, 0.1 N m/(rad s) | PHYSICAL | `K_I` |
 | `MPC_THR_HOVER` | airframe | all | thrust normalization, neutral thrust |
-| `TRJ_*` | see `module.yaml` | all | trajectory definitions |
+| `TRJ_*` | below | all | trajectory definitions |
 
 ATTITUDE_PX4 and RATE_PX4 additionally use the native `MC_*` attitude and rate
-gains through PX4's own controllers.
+gains through PX4's own controllers. PHYSICAL additionally uses the native
+`CA_ROTOR*` effectiveness, motor limits, slew rates and `THR_MDL_FAC`.
+
+Integral gain choice: with `Kx = 4`, `Kv = 3` the translational loop
+`s³ + Kv s² + Kx s + Ki` is stable for `Ki < Kv Kx = 12`. The defaults sit far
+below that (integral time `Kx/Ki` of 13 s horizontally, 7 s vertically). The
+attitude integral is similarly far below its bound `K_Ω K_R / J`.
 
 ## Operation
 
 ### Shell commands (`pxh>` / MAVLink console)
 
 ```
-se3_control status                 # path, active/faulted, trajectory, fault response, PHYSICAL perf
+se3_control status                 # path, active/faulted, trajectory, integral, fault response, PHYSICAL perf
 se3_control select                 # request the SE3 mode from Commander (may be rejected)
-se3_control hold                   # capture and hold the measured position and heading
+se3_control hold                   # cancel any trajectory; hold the measured position and heading
 se3_control list                   # setpoint, steps5, circle, figure8
-se3_control trajectory <name>      # start; requires SE3 active and holding
+se3_control trajectory <name>      # start now; preempts any running trajectory
 se3_control fault controller|state|allocation   # SITL only, needs SYS_FAILURE_EN=1
 ```
 
@@ -303,16 +363,52 @@ se3_control fault controller|state|allocation   # SITL only, needs SYS_FAILURE_E
 ### Hold and trajectories
 
 - **Mode entry is passive:** SE3 captures the measured position and heading and
-  holds them. `hold` re-captures at any time.
-- **References are absolute local NED.** No alignment to the current pose
-  occurs.
-  - **circle:** starts at `(TRJ_HOME_X + TRJ_CIR_R, TRJ_HOME_Y, TRJ_HOME_Z)`.
-  - **figure8:** starts at `TRJ_HOME_*`.
-  - **steps5:** five fixed points around `(0, 0, −0.75)`, each held for
-    `TRJ_STEP_HOLD`.
-  - **setpoint:** follows `TRJ_SP_*` live; edits become immediate steps.
-- All other values are snapshotted at start. A completed trajectory holds its
-  final reference.
+  holds them until a command arrives. Commands sent before activation are
+  discarded.
+- **Direct switching.** `trajectory <name>` and `hold` are accepted whenever
+  SE3 is active, including during a running trajectory or its entry. The
+  latest command wins and is applied on the next 100 Hz cycle. A new
+  trajectory is built from the reference the current plan has at that
+  instant, so no `hold`, completion or reselection is needed in between.
+  `hold` cancels the trajectory and captures the measured pose.
+- **References are absolute local NED** (`TRJ_HOME_*` is the pattern centre,
+  altitude and heading, and the return point).
+
+| Trajectory | Behavior | Parameters (defaults) |
+|---|---|---|
+| `setpoint` | immediate step to `TRJ_SP_*`, held indefinitely; live parameter edits are immediate steps | `TRJ_SP_X/Y/Z/YAW` (0, 0, −1.0, 0) |
+| `steps5` | five true steps, each held `TRJ_STEP_HOLD`, then a smooth return home and hold | `TRJ_STEP_HOLD` (5 s) |
+| `circle` | `TRJ_CIR_TURNS` turns of radius `TRJ_CIR_R` in `TRJ_CIR_T` around home, starting at its +X edge | `TRJ_CIR_R/T/TURNS` (1.0 m, 60 s, 5) |
+| `figure8` | `x = a_x sin φ`, `y = a_y sin 2φ` around home, `TRJ_F8_TURNS` cycles in `TRJ_F8_T` | `TRJ_F8_AX/AY/T/TURNS` (0.8 m, 1.2 m, 90 s, 5) |
+
+`TRJ_HOME_X/Y/Z/YAW` default to (0, 0, −1.2, 0). The `steps5` references are
+fixed: (0, 0, −1.2), (1, 0, −1.2), (1, 1, −1.2), (0, 1, −1.2) and
+(0, 0, −0.9). The first is taken immediately when the command is applied.
+
+**Plans** (`trajectory/Catalog.cpp`). Every segment is a degree-9 two-point
+Hermite polynomial (`p = E(u) + (1−u)⁵ F(u)`, C4 at both ends), optionally
+carrying a circle or figure-eight driven by a Hermite phase. This gives
+analytic velocity, acceleration, jerk and snap everywhere.
+
+- **Circle and figure-eight:**
+  1. **Entry:** a C4 transition from the current reference (position through
+     snap, yaw through yaw acceleration) to rest on the pattern.
+  2. **Ramp-up:** a phase ramp along the pattern to the nominal rate
+     `w = 2π·turns / T`. The phase rate follows the C3 smooth step.
+  3. **Pattern:** exactly `TRJ_*_T` seconds at the constant rate, covering
+     phase [0, 2π·turns].
+  4. **Ramp-down:** the reverse phase ramp to rest on the pattern.
+  5. **Return:** a C4 transition home, which is then held.
+
+  Entry, ramps and return are not part of the configured duration.
+- **Transition durations** are the shortest (from 2 s, on a 25 % grid, at most
+  30 s) that keep speed and acceleration within 0.6 m/s and 0.6 m/s², and
+  yaw rate within 0.5 rad/s, or within 110 % of the start values if larger.
+  Ramps last at least 2 s and keep the tangential acceleration within
+  0.6 m/s².
+- **Parameter snapshot:** all `TRJ_*` values except the live setpoint are
+  taken when the command is accepted.
+- **Completion:** a finished plan reports `completed` and holds home at rest.
 
 ### Commander integration
 
@@ -393,10 +489,10 @@ metadata matches. It has **not** been run on hardware.
 
 | Topic | Rate in the default profile | Content |
 |---|---|---|
-| `se3_trajectory_status` | 10 ms | reference (position through snap, yaw), run id, plan CRC, phase |
+| `se3_trajectory_status` | 10 ms | reference (position through snap, yaw), run id, plan CRC, trajectory id (−1 hold), segment, phase, position-integral acceleration and freeze flag |
 | `trajectory_setpoint` | 200 ms | same reference on the standard topic (observation; `mc_pos_control` is off) |
 | `vehicle_attitude_setpoint` | 50 ms | geometric `R_d` and thrust (the command in ATTITUDE_PX4) |
-| `se3_wrench_setpoint` | 10 ms | PHYSICAL requested wrench, model, neutral flag, gyro sample time |
+| `se3_wrench_setpoint` | 10 ms | PHYSICAL requested wrench, attitude-integral moment, neutral flag, gyro sample time |
 | `se3_allocation_status` | 10 ms | requested/achieved wrench, roll/pitch and yaw scale, thrust limit, rotor thrusts, motor commands, valid/compatible |
 
 **High rate.** Setting the high-rate bit (`SDLOG_PROFILE` |= 16) logs

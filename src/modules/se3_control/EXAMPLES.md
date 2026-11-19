@@ -44,10 +44,13 @@ Control paths:
 |---|---|
 | 0 | ATTITUDE_PX4 |
 | 1 | RATE_PX4 (default) |
-| 2 | PHYSICAL (Gazebo F450 only) |
+| 2 | PHYSICAL |
 
-PHYSICAL has no validated real-hardware motor model. Do not use it on
-the physical F450.
+PHYSICAL uses `SE3_MASS`, `SE3_JXX/JYY/JZZ` and the vehicle's
+`CA_ROTOR*` geometry, `CT` (newtons at full command), `KM` and
+`THR_MDL_FAC`. The defaults describe the Gazebo F450. No real-hardware
+values have been identified or validated: do not use PHYSICAL on the
+physical F450 before measuring them.
 
 ## 3. Select the controller
 
@@ -99,22 +102,27 @@ param show TRJ_F8_T
 param show TRJ_F8_TURNS
 ```
 
-Set only values suitable for your actual local-NED origin and flight area:
+Defaults: home (0, 0, −1.2) m with yaw 0; circle 1.0 m radius, 5 turns
+in 60 s; figure-eight amplitudes 0.8 m (X) and 1.2 m (Y), 5 cycles in
+90 s. Set only values suitable for your actual local-NED origin and
+flight area, for example:
 
 ```text
-param set TRJ_HOME_X 0
-param set TRJ_HOME_Y 0
-param set TRJ_HOME_Z -0.75
-param set TRJ_CIR_R 0.5
-param set TRJ_CIR_T 20
-param set TRJ_F8_AX 0.5
-param set TRJ_F8_AY 0.5
-param set TRJ_F8_T 30
+param set TRJ_HOME_Z -1.2
+param set TRJ_CIR_R 1.0
+param set TRJ_CIR_T 60
+param set TRJ_F8_AX 0.8
+param set TRJ_F8_AY 1.2
+param set TRJ_F8_T 90
 ```
 
 The numbers above are examples, not universally safe flight targets.
-Circle starts at `TRJ_HOME_X + TRJ_CIR_R`; figure-eight starts at
-`TRJ_HOME_*`. Neither starts automatically at the current aircraft position.
+Both patterns are centred on `TRJ_HOME_*`. The reference flies smoothly
+from wherever it is to the pattern, ramps up along it, flies the
+configured turns in exactly `TRJ_CIR_T` / `TRJ_F8_T`, ramps down, and
+returns to home and holds. The entry and return add several seconds.
+Check that the path from the current reference to the pattern and
+back home is clear.
 
 Live setpoint parameters:
 
@@ -128,8 +136,10 @@ param show TRJ_SP_YAW
 Set these near the intended hover position before starting a live-setpoint
 trajectory. Parameter edits become immediate reference steps.
 
-The `steps5` trajectory contains five fixed points around
-`(0, 0, -0.75)` and does not use `TRJ_HOME_*`.
+The `steps5` trajectory steps through five fixed points, each held for
+`TRJ_STEP_HOLD` (5 s): `(0, 0, -1.2)`, `(1, 0, -1.2)`, `(1, 1, -1.2)`,
+`(0, 1, -1.2)` and `(0, 0, -0.9)`. These are true steps; the first is
+taken immediately. Afterwards it returns smoothly to `TRJ_HOME_*`.
 
 ## 5. Take off and enter SE3
 
@@ -147,42 +157,26 @@ Confirm:
 
 - `active=1`
 - `faulted=0`
-- `trajectory: holding`
+- `trajectory: measured-pose hold, holding`
 
 SE3 initially captures and holds the measured position and heading.
 No trajectory starts automatically.
 
 ## 6. Execute and interrupt trajectories
 
-Start a configured circle:
+Any command takes effect immediately while SE3 is active, including
+during a running trajectory: no `hold`, completion or reselection is
+needed in between.
 
 ```text
 se3_control trajectory circle
 se3_control status
+se3_control trajectory figure8     # preempts the circle, entering smoothly
+se3_control trajectory steps5      # steps at once to (0, 0, -1.2)
+se3_control hold                   # cancels and holds the measured pose
 ```
 
-Interrupt it and hold the measured position:
-
-```text
-se3_control hold
-se3_control status
-```
-
-Start a configured figure-eight:
-
-```text
-se3_control trajectory figure8
-se3_control status
-se3_control hold
-```
-
-Run the five predefined setpoints only after verifying every target:
-
-```text
-se3_control trajectory steps5
-se3_control status
-se3_control hold
-```
+Verify every `steps5` target before running it.
 
 For a live setpoint, first configure TRJ_SP_* to a safe position:
 
@@ -201,9 +195,10 @@ se3_control hold
 
 The X value above is only an example and must be replaced if unsafe.
 
-A new trajectory can be started after returning to holding.
-Finite trajectories hold their final commanded reference when completed;
-`se3_control hold` instead captures the current measured pose.
+The setpoint stays active indefinitely. Finite trajectories return
+home and hold it when completed (`completed (holding home)` in
+`se3_control status`); `se3_control hold` instead captures the
+current measured pose.
 
 ## 7. Return to PX4 Position mode
 

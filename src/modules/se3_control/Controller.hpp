@@ -15,7 +15,19 @@ namespace se3_control
 class Controller
 {
 public:
-  // Compute translation feedback and feedforward.
+  // Advance the bounded position-error integral by dt [s] (see Controller.cpp).
+  //
+  // freeze stops integration on every axis (output saturation). Returns false
+  // for invalid inputs, leaving the integral unchanged.
+  static bool update_integral(
+    const State & state,
+    const trajectory_generator::Reference & reference,
+    const TranslationGains & gains,
+    float dt,
+    bool freeze,
+    PositionIntegral & integral);
+
+  // Compute translation feedback, integral and feedforward.
   //
   // Returns false for invalid state, reference, or parameters.
   // On failure, output remains unchanged.
@@ -23,6 +35,7 @@ public:
     const State & state,
     const trajectory_generator::Reference & reference,
     const TranslationGains & gains,
+    const PositionIntegral & integral,
     TranslationOutput & output);
 
   // Calculate analytic desired-force derivatives using the rigid-body model.
@@ -36,6 +49,7 @@ public:
     const State & state,
     const trajectory_generator::Reference & reference,
     const TranslationGains & gains,
+    const PositionIntegral & integral,
     const TranslationOutput & translation,
     ForceDerivatives & output);
 
@@ -47,6 +61,7 @@ public:
     const State & state,
     const trajectory_generator::Reference & reference,
     const TranslationGains & gains,
+    const PositionIntegral & integral,
     GeometricOutput & output);
 };
 
