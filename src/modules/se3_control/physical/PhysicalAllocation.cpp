@@ -25,10 +25,20 @@ bool thrust_differs(const Wrench &achieved, const Wrench &request)
 	return fabsf(achieved.thrust - request.thrust) > 1e-4f * fmaxf(1.f, fabsf(request.thrust));
 }
 
-// Fraction of the requested moment achieved along it, in [0, 1].
-float achieved_fraction(float achieved_along, float requested_squared)
+// Fraction of a requested moment (roll/pitch pair or yaw) that the achieved
+// moment delivers, in [0, 1]: 1 - |achieved - requested| / |requested|. For
+// achieved = c requested with c in [0, 1] this is exactly c, the allocation
+// scale; an off-axis error or an overshoot lowers it, as does any achieved
+// moment for a zero request. Errors within 1e-4 max(1 N m, |requested|), the
+// tolerance thrust_differs uses for the collective, are single-precision
+// rounding and count as fully achieved.
+float achieved_fraction(float error, float requested)
 {
-	return fminf(fmaxf(achieved_along / requested_squared, 0.f), 1.f);
+	if (error <= 1e-4f * fmaxf(1.f, requested)) {
+		return 1.f;
+	}
+
+	return requested > 0.f ? fminf(fmaxf(1.f - error / requested, 0.f), 1.f) : 0.f;
 }
 
 } // namespace
@@ -185,10 +195,7 @@ bool Allocation::allocate(const Wrench &request, AllocationResult &result) const
 void Allocation::apply_commands(const Wrench &request, const float command[kRotorCount],
 				AllocationResult &result) const
 {
-	bool changed = false;
-
 	for (int i = 0; i < kRotorCount; ++i) {
-		changed = changed || fabsf(command[i] - result.command[i]) > 1e-6f;
 		result.command[i] = command[i];
 		result.rotor_thrust[i] = rotor_thrust(i, command[i]);
 	}
@@ -196,22 +203,13 @@ void Allocation::apply_commands(const Wrench &request, const float command[kRoto
 	result.achieved = wrench(command);
 	result.thrust_limited = thrust_differs(result.achieved, request);
 
-	if (!changed) {
-		return;
-	}
-
 	const matrix::Vector3f &requested = request.moment;
-	const matrix::Vector3f &achieved = result.achieved.moment;
-	const float roll_pitch_squared = requested(0) * requested(0) + requested(1) * requested(1);
+	const matrix::Vector3f error = result.achieved.moment - requested;
 
-	if (roll_pitch_squared > 0.f) {
-		result.roll_pitch_scale = fminf(result.roll_pitch_scale,
-						achieved_fraction(achieved(0) * requested(0) + achieved(1) * requested(1), roll_pitch_squared));
-	}
-
-	if (fabsf(requested(2)) > 0.f) {
-		result.yaw_scale = fminf(result.yaw_scale, achieved_fraction(achieved(2) * requested(2), requested(2) * requested(2)));
-	}
+	result.roll_pitch_scale = fminf(result.roll_pitch_scale,
+					achieved_fraction(matrix::Vector2f{error(0), error(1)}.norm(),
+							matrix::Vector2f{requested(0), requested(1)}.norm()));
+	result.yaw_scale = fminf(result.yaw_scale, achieved_fraction(fabsf(error(2)), fabsf(requested(2))));
 }
 
 Wrench Allocation::wrench(const float command[kRotorCount]) const

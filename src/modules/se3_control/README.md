@@ -303,9 +303,13 @@ motor-failure handling, and `actuator_motors` publication.
 **Reporting.** `se3_allocation_status` describes the commands actually
 published (`Allocation::apply_commands()`): after slew limiting and clipping,
 with stopped or failed motors contributing zero thrust. The achieved wrench,
-rotor thrusts and `thrust_limited` follow from those commands; if any command
-changed after allocation, each scale is capped at the fraction of the
-requested moment the final wrench achieves along it. `valid = false` means not
+rotor thrusts and `thrust_limited` follow from those commands. Each scale is
+capped at `1 − ‖M_achieved − M_requested‖ / ‖M_requested‖` for its moment
+(roll/pitch pair, yaw), clamped to [0, 1]: the allocated fraction when the
+final moment is the request scaled down, and lower for a direction error, an
+overshoot or a moment produced for a zero request. Errors within
+`1e-4 · max(1 N m, ‖M_requested‖)` (the tolerance of `thrust_limited`) are
+rounding and leave the scale unchanged. `valid = false` means not
 all rotors are running. The roll/pitch and yaw scales and `thrust_limited` are
 the anti-windup inputs of both SE3 integrals.
 
@@ -557,11 +561,13 @@ make tests TESTFILTER=PhysicalAllocation
   - `SE3_CTRL` mapping, per-path controllers, an exhaustive check that the
     RATE_PX4 publish predicate equals the original, and allocator ownership
     for each path, including the fault fallback.
-- **PhysicalAllocation** (14 tests): effectiveness signs, linear thrust,
+- **PhysicalAllocation** (16 tests): effectiveness signs, linear thrust,
   invalid models, small SI coefficients below the native filter threshold,
   exact reproduction of feasible wrenches, desaturation priorities,
   saturation feedback from the published (slew-limited or stopped) commands,
-  ownership, an unavailable wrench input and stale-command freshness.
+  including off-axis, overshooting and reversed moments, moments for a zero
+  request and rounding-level changes, ownership, an unavailable wrench input
+  and stale-command freshness.
 
 The native `ControlAllocation*` and `ActuatorEffectiveness*` tests also pass.
 

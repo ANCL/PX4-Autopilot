@@ -286,6 +286,100 @@ TEST(PhysicalAllocation, FinalCommandsDetermineSaturationFeedback)
 	EXPECT_LT(failed.yaw_scale, 1.f);
 }
 
+// Motor commands that produce exactly this wrench (u = B^-1 W).
+void commands_for(const Allocation &allocation, const Wrench &wrench, float command[kRotorCount])
+{
+	matrix::Vector<float, kRotorCount> w;
+	w(0) = wrench.thrust;
+
+	for (int axis = 0; axis < 3; ++axis) { w(axis + 1) = wrench.moment(axis); }
+
+	const matrix::Vector<float, kRotorCount> u = allocation.inverse() * w;
+
+	for (int i = 0; i < kRotorCount; ++i) { command[i] = u(i); }
+}
+
+AllocationResult apply(const Allocation &allocation, const Wrench &request, const Wrench &produced)
+{
+	AllocationResult result = allocate(allocation, request.thrust, request.moment);
+	float command[kRotorCount];
+	commands_for(allocation, produced, command);
+	allocation.apply_commands(request, command, result);
+	expect_wrench(result.achieved, produced.thrust, produced.moment, 1e-4f);
+	return result;
+}
+
+TEST(PhysicalAllocation, SaturationFeedbackComparesFullMomentVectors)
+{
+	const Allocation allocation = configured();
+	const Wrench request{weight(), {0.4f, 0.f, 0.2f}};
+
+	// Correct projection onto the request, wrong direction: roll/pitch is
+	// reported as limited although the achieved roll equals the requested one.
+	const AllocationResult off_axis = apply(allocation, request, Wrench{weight(), {0.4f, 0.3f, 0.2f}});
+	EXPECT_NEAR(off_axis.roll_pitch_scale, 1.f - 0.3f / 0.4f, 1e-3f);
+	EXPECT_FLOAT_EQ(off_axis.yaw_scale, 1.f);
+	EXPECT_FALSE(off_axis.thrust_limited);
+
+	// Overshoot of the requested moments is a limitation, not full achievement.
+	const AllocationResult overshoot = apply(allocation, request, Wrench{weight(), {0.6f, 0.f, 0.3f}});
+	EXPECT_NEAR(overshoot.roll_pitch_scale, 0.5f, 1e-3f);
+	EXPECT_NEAR(overshoot.yaw_scale, 0.5f, 1e-3f);
+
+	// An opposite yaw moment achieves none of the request.
+	const AllocationResult reversed = apply(allocation, request, Wrench{weight(), {0.4f, 0.f, -0.2f}});
+	EXPECT_FLOAT_EQ(reversed.roll_pitch_scale, 1.f);
+	EXPECT_FLOAT_EQ(reversed.yaw_scale, 0.f);
+
+	// A pure down-scaling still reports the allocated fraction.
+	const AllocationResult scaled = apply(allocation, request, Wrench{weight(), {0.1f, 0.f, 0.15f}});
+	EXPECT_NEAR(scaled.roll_pitch_scale, 0.25f, 1e-3f);
+	EXPECT_NEAR(scaled.yaw_scale, 0.75f, 1e-3f);
+}
+
+TEST(PhysicalAllocation, SaturationFeedbackForZeroRequestsAndRounding)
+{
+	const Allocation allocation = configured();
+	const Wrench level{weight(), {}};
+
+	// A residual moment (e.g. slewing away from a previous command) for a zero
+	// request is a limitation of that axis only.
+	const AllocationResult residual_roll = apply(allocation, level, Wrench{weight(), {0.05f, 0.f, 0.f}});
+	EXPECT_FLOAT_EQ(residual_roll.roll_pitch_scale, 0.f);
+	EXPECT_FLOAT_EQ(residual_roll.yaw_scale, 1.f);
+
+	const AllocationResult residual_yaw = apply(allocation, level, Wrench{weight(), {0.f, 0.f, -0.01f}});
+	EXPECT_FLOAT_EQ(residual_yaw.roll_pitch_scale, 1.f);
+	EXPECT_FLOAT_EQ(residual_yaw.yaw_scale, 0.f);
+
+	// Command changes at single-precision rounding level are not limitations,
+	// for zero and non-zero requests.
+	const Wrench requests[] {level, Wrench{weight(), {0.4f, -0.3f, 0.1f}}};
+
+	for (const Wrench &request : requests) {
+		AllocationResult result = allocate(allocation, request.thrust, request.moment);
+		float command[kRotorCount];
+
+		for (int i = 0; i < kRotorCount; ++i) { command[i] = result.command[i] + (i % 2 ? 2e-6f : -2e-6f); }
+
+		allocation.apply_commands(request, command, result);
+		EXPECT_FLOAT_EQ(result.roll_pitch_scale, 1.f);
+		EXPECT_FLOAT_EQ(result.yaw_scale, 1.f);
+		EXPECT_FALSE(result.thrust_limited);
+	}
+
+	// Feedback never exceeds what the allocation itself had to scale to.
+	const Wrench yaw_heavy{weight(), {0.3f, 0.2f, 2.f}};
+	AllocationResult result = allocate(allocation, yaw_heavy.thrust, yaw_heavy.moment);
+	const float allocated_yaw = result.yaw_scale;
+	ASSERT_LT(allocated_yaw, 1.f);
+	const AllocationResult unchanged = result;
+	allocation.apply_commands(yaw_heavy, unchanged.command, result);
+	EXPECT_FLOAT_EQ(result.roll_pitch_scale, 1.f);
+	EXPECT_LE(result.yaw_scale, allocated_yaw);
+	EXPECT_NEAR(result.yaw_scale, allocated_yaw, 1e-5f);
+}
+
 TEST(PhysicalAllocation, HoverAndMomentDirections)
 {
 	const Allocation allocation = configured();

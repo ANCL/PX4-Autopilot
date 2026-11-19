@@ -74,9 +74,11 @@ public:
 
 	// Replace the allocated commands in result with the commands finally
 	// published (after slew limiting, clipping or stopped motors) and update
-	// the achieved wrench, rotor thrust and saturation feedback to match. A
-	// changed command caps each scale at the fraction of the requested moment
-	// that the final wrench achieves along it.
+	// the achieved wrench, rotor thrust and saturation feedback to match. Each
+	// scale is capped at 1 - |achieved - requested| / |requested| for its
+	// moment (roll/pitch pair, yaw): the allocated fraction when the final
+	// moment is the request scaled down, and lower for a direction error, an
+	// overshoot or a moment produced for a zero request.
 	void apply_commands(const Wrench &request, const float command[kRotorCount], AllocationResult &result) const;
 
 	// Wrench produced by the given motor commands.
